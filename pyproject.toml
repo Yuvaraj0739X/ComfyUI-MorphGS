@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-morphgs"
+description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer. Orchestrates character rig conversion, DINOv2/SV4D preprocessing, and gsplat-based training against a MorphGS environment."
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["numpy", "opencv-python"]
+
+[project.urls]
+Repository = "https://github.com/Yuvaraj0739X/ComfyUI-MorphGS"
+
+[tool.comfy]
+PublisherId = "Yuvaraj0739X"
+DisplayName = "ComfyUI-MorphGS"
+Icon = ""
