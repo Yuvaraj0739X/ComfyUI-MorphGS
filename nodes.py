@@ -1,9 +1,10 @@
 import os
 
-import numpy as np
-import torch
-
-import folder_paths
+# numpy/torch/folder_paths are deliberately NOT imported at module scope: folder_paths only
+# exists inside a running ComfyUI process, so importing it here breaks the Comfy Registry's
+# isolated node scanner (which inspects this file without a full ComfyUI installation
+# alongside it) with ModuleNotFoundError, even though it works fine once ComfyUI itself
+# loads this node. They're imported lazily inside the one method that actually needs them.
 
 from . import config
 from .process_utils import (
@@ -208,6 +209,8 @@ class MorphGSTrainAndRender:
                 f"Expected rendered video at {render_path} but it was not produced. Full log:\n" + "\n".join(log)
             )
 
+        import folder_paths
+
         output_dir = folder_paths.get_output_directory()
         local_video_path = os.path.join(output_dir, "morphgs", f"{experiment}_{iterations}.mp4")
         copy_pipeline_file_to_local(render_path, local_video_path)
@@ -219,6 +222,8 @@ class MorphGSTrainAndRender:
     @staticmethod
     def _load_video_as_tensor(video_path):
         import cv2
+        import numpy as np
+        import torch
 
         cap = cv2.VideoCapture(video_path)
         frames = []
