@@ -239,14 +239,117 @@ class MorphGSTrainAndRender:
         return torch.from_numpy(np.stack(frames))
 
 
+_SV4D_CHECKPOINTS = {
+    "sv4d": ("stabilityai/sv4d2.0", "sv4d2.safetensors"),
+    "sv4d2_8views": ("stabilityai/sv4d2.0", "sv4d2_8views.safetensors"),
+    "sp4d": ("stabilityai/sp4d", "sp4d.safetensors"),
+}
+
+
+class MorphGSSetupSV4D:
+    """
+    One-time environment setup for the SV4D/SP4D multi-view synthesis step used by
+    MorphGS: Preprocess Video. Not needed for DINOv2 target-character features (those
+    download automatically via torch.hub on first use) or for SkinTokens (handled by
+    ComfyUI-SkinTokens's own node).
+
+    Clones Stability AI's generative-models repo (sp4d branch, which carries both the
+    SP4D and SV4D2.0 code paths) into the MorphGS environment, installs its Python
+    dependencies, and downloads the checkpoint for the requested mode. All downloads are
+    anonymous HTTPS -- neither the repo clone nor the Hugging Face checkpoints require any
+    login or token.
+
+    generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
+    torch.from_numpy/pytorch3d in the MorphGS environment (the same regression class
+    encountered earlier from an unrelated pip install in this environment) -- this node
+    re-pins numpy<2 immediately after installing SV4D's requirements and verifies both
+    torch.from_numpy and pytorch3d still import cleanly before reporting success, rather
+    than silently leaving the environment in a broken state.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sv4d_mode": (["sv4d", "sp4d", "sv4d2_8views"], {"default": "sv4d"}),
+                "force_reinstall": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("log",)
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+
+    def run(self, sv4d_mode, force_reinstall):
+        log = []
+        gm_dir = f"{config.MORPHGS_HOME}/src/extlibs/generative-models"
+
+        repo_exists = "EXISTS" in run_bash(f"[ -d '{gm_dir}/.git' ] && echo EXISTS || echo MISSING")
+        if force_reinstall or not repo_exists:
+            out = run_bash(
+                f"rm -rf '{gm_dir}' && "
+                f"git clone --branch sp4d --depth 1 https://github.com/Stability-AI/generative-models.git '{gm_dir}'",
+                timeout=600,
+            )
+            log.append(out)
+
+            install_out = run_bash(
+                f"cd '{gm_dir}' && "
+                f"pip install -r requirements/pt2.txt && "
+                f"pip install -e . && "
+                f"pip install -e 'git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata'",
+                timeout=1800,
+            )
+            log.append(install_out)
+
+            # generative-models' requirements/pt2.txt pins numpy==2.1, which breaks
+            # torch.from_numpy/pytorch3d in this environment -- re-pin and verify before
+            # declaring success.
+            fix_out = run_bash(
+                'pip install "numpy<2" && '
+                "python -c \"import torch, numpy as np; assert torch.from_numpy(np.zeros(3)) is not None\" && "
+                'python -c "import pytorch3d; from pytorch3d.renderer import look_at_view_transform" && '
+                'echo NUMPY_FIX_VERIFIED',
+                timeout=300,
+            )
+            log.append(fix_out)
+            if "NUMPY_FIX_VERIFIED" not in fix_out:
+                raise RuntimeError(
+                    "SV4D dependency install completed but the post-install numpy/torch/pytorch3d "
+                    "verification did not pass -- environment may be left in a broken state. "
+                    f"Full log:\n" + "\n".join(log)
+                )
+        else:
+            log.append(f"{gm_dir} already exists, skipping clone/install (force_reinstall=False)")
+
+        hf_repo, filename = _SV4D_CHECKPOINTS[sv4d_mode]
+        ckpt_dir = f"{gm_dir}/checkpoints"
+        ckpt_path = f"{ckpt_dir}/{filename}"
+        ckpt_exists = "EXISTS" in run_bash(f"[ -f '{ckpt_path}' ] && echo EXISTS || echo MISSING")
+        if force_reinstall or not ckpt_exists:
+            url = f"https://huggingface.co/{hf_repo}/resolve/main/{filename}"
+            out = run_bash(
+                f"mkdir -p '{ckpt_dir}' && curl -L -o '{ckpt_path}' '{url}'",
+                timeout=None,
+            )
+            log.append(out)
+        else:
+            log.append(f"{ckpt_path} already exists, skipping download")
+
+        return ("\n".join(log),)
+
+
 NODE_CLASS_MAPPINGS = {
     "MorphGSPreprocessCharacter": MorphGSPreprocessCharacter,
     "MorphGSPreprocessVideo": MorphGSPreprocessVideo,
     "MorphGSTrainAndRender": MorphGSTrainAndRender,
+    "MorphGSSetupSV4D": MorphGSSetupSV4D,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MorphGSPreprocessCharacter": "MorphGS: Preprocess Character",
     "MorphGSPreprocessVideo": "MorphGS: Preprocess Video",
     "MorphGSTrainAndRender": "MorphGS: Train & Render",
+    "MorphGSSetupSV4D": "MorphGS: Setup SV4D",
 }

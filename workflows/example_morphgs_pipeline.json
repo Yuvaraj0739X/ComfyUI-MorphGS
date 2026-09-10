@@ -1,0 +1,101 @@
+{
+  "last_node_id": 4,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MorphGSSetupSV4D",
+      "title": "MorphGS: Setup SV4D (run once)",
+      "pos": [80, 80],
+      "size": [340, 100],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {"name": "sv4d_mode", "type": "COMBO", "widget": {"name": "sv4d_mode"}, "link": null},
+        {"name": "force_reinstall", "type": "BOOLEAN", "widget": {"name": "force_reinstall"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "log", "type": "STRING", "links": []}
+      ],
+      "properties": {"Node name for S&R": "MorphGSSetupSV4D"},
+      "widgets_values": ["sv4d", false]
+    },
+    {
+      "id": 2,
+      "type": "MorphGSPreprocessCharacter",
+      "title": "MorphGS: Preprocess Character",
+      "pos": [80, 240],
+      "size": [340, 170],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "character_source_path", "type": "STRING", "widget": {"name": "character_source_path"}, "link": null},
+        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": null},
+        {"name": "target_height", "type": "FLOAT", "widget": {"name": "target_height"}, "link": null},
+        {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "character_name", "type": "STRING", "links": [1]},
+        {"name": "log", "type": "STRING", "links": []}
+      ],
+      "properties": {"Node name for S&R": "MorphGSPreprocessCharacter"},
+      "widgets_values": ["/workspace/inputs/character.fbx", "my_character", 1.6, false]
+    },
+    {
+      "id": 3,
+      "type": "MorphGSPreprocessVideo",
+      "title": "MorphGS: Preprocess Video",
+      "pos": [80, 460],
+      "size": [340, 200],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "video_path", "type": "STRING", "widget": {"name": "video_path"}, "link": null},
+        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": null},
+        {"name": "already_masked", "type": "BOOLEAN", "widget": {"name": "already_masked"}, "link": null},
+        {"name": "sv4d_mode", "type": "COMBO", "widget": {"name": "sv4d_mode"}, "link": null},
+        {"name": "fastmode", "type": "BOOLEAN", "widget": {"name": "fastmode"}, "link": null},
+        {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "scene_name", "type": "STRING", "links": [2]},
+        {"name": "log", "type": "STRING", "links": []}
+      ],
+      "properties": {"Node name for S&R": "MorphGSPreprocessVideo"},
+      "widgets_values": ["/workspace/inputs/video.mp4", "my_scene", false, "sv4d", true, false]
+    },
+    {
+      "id": 4,
+      "type": "MorphGSTrainAndRender",
+      "title": "MorphGS: Train & Render",
+      "pos": [500, 300],
+      "size": [340, 200],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 2},
+        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": 1},
+        {"name": "iterations", "type": "INT", "widget": {"name": "iterations"}, "link": null},
+        {"name": "force_retrain", "type": "BOOLEAN", "widget": {"name": "force_retrain"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "video_path", "type": "STRING", "links": []},
+        {"name": "frames", "type": "IMAGE", "links": []},
+        {"name": "log", "type": "STRING", "links": []}
+      ],
+      "properties": {"Node name for S&R": "MorphGSTrainAndRender"},
+      "widgets_values": [5000, false]
+    }
+  ],
+  "links": [
+    {"id": 1, "origin_id": 2, "origin_slot": 0, "target_id": 4, "target_slot": 1, "type": "STRING"},
+    {"id": 2, "origin_id": 3, "origin_slot": 0, "target_id": 4, "target_slot": 0, "type": "STRING"}
+  ],
+  "groups": [],
+  "version": 0.4,
+  "extra": {}
+}

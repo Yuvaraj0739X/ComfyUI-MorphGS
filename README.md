@@ -21,6 +21,7 @@ pulling the results back into ComfyUI.
 | **MorphGS: Preprocess Character** | Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
 | **MorphGS: Preprocess Video** | Segments a raw video onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. |
 | **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. |
+| **MorphGS: Setup SV4D** | One-time environment setup for the SV4D/SP4D dependency used by Preprocess Video: clones Stability AI's `generative-models` repo, installs its dependencies, and downloads the checkpoint for the mode you pick. Not needed for the DINOv2 features Preprocess Character uses (those download automatically via `torch.hub`), and not needed for SkinTokens (that's handled by ComfyUI-SkinTokens's own node). No login or token is required for either the repo clone or the checkpoint download. |
 
 Each node caches its own outputs and skips re-running a stage that's already done (unless
 `force_reprocess`/`force_retrain` is set), so you can safely re-run an upstream node without
@@ -54,12 +55,19 @@ Set these environment variables before launching ComfyUI (defaults shown):
 
 ## Typical workflow
 
+0. **MorphGS: Setup SV4D** (one-time, only if you'll use Preprocess Video) — pick your
+   `sv4d_mode`, run once. This clones ~1GB of code and downloads a ~12GB checkpoint, so
+   expect it to take a while the first time; it's cached and skipped on subsequent runs.
 1. **MorphGS: Preprocess Character** — point `character_source_path` at your rigged mesh
    (`.fbx`/`.glb`), give it a `character_name`.
 2. **MorphGS: Preprocess Video** — point `video_path` at your source clip, give it a
    `scene_name`, pick an `sv4d_mode`.
 3. **MorphGS: Train & Render** — pass the `scene_name` and `character_name` from the two
    nodes above, set `iterations`, run.
+
+A ready-to-load example wiring nodes 1-3 together is in
+[`workflows/example_morphgs_pipeline.json`](workflows/example_morphgs_pipeline.json) —
+drag it into ComfyUI to see the graph.
 
 ## Known good pairing
 
