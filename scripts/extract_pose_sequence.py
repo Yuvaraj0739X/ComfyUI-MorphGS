@@ -25,10 +25,18 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
 def parse_rig(rig_path):
     """Minimal joints/root/hier parser -- ignores skin lines entirely, since this script
-    only needs joint rest positions and hierarchy, not per-vertex skin weights."""
+    only needs joint rest positions and hierarchy, not per-vertex skin weights.
+
+    Handles two rig-file conventions seen in the wild: mesh_to_morphgs.py's converter emits
+    an explicit "root <name>" directive line, while MorphGS's own bundled rig files instead
+    mark the root via a "hier <root> <root>" self-loop and have no "root" line at all. Both
+    are normalized here to a plain root_idx, with the self-loop entry dropped from the real
+    parent/child edge list (it isn't one, and its presence would throw off the sequential
+    child-index assumption build_parent_tables relies on).
+    """
     joints_name = []
     joints_pos = []
-    bones = []  # (parent_idx, child_idx), in file order
+    bones = []  # (parent_name, child_name), real edges only -- self-loop root markers dropped
     root_name = None
 
     with open(rig_path) as f:
@@ -43,7 +51,15 @@ def parse_rig(rig_path):
             elif tokens[0] == "root":
                 root_name = tokens[1]
             elif tokens[0] == "hier":
-                bones.append((tokens[1], tokens[2]))
+                parent, child = tokens[1], tokens[2]
+                if parent == child:
+                    if root_name is None:
+                        root_name = parent
+                    continue
+                bones.append((parent, child))
+
+    if root_name is None:
+        root_name = joints_name[0]  # convention: the root joint is always declared first
 
     name_to_idx = {n: i for i, n in enumerate(joints_name)}
     root_idx = name_to_idx[root_name]

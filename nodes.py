@@ -242,14 +242,21 @@ class MorphGSTrainAndRender:
 class MorphGSExportAnimatedMesh:
     """
     Exports MorphGS's trained per-scene motion as a real, standalone animated 3D mesh
-    (glTF/GLB or FBX) baked onto the ORIGINAL rigged character file -- not just a
-    rendered video. Two steps, both run in the MorphGS environment:
-      1. extract_pose_sequence.py replays the trained AnimationField/SimpleDeformNet
-         checkpoint frame-by-frame to get absolute per-joint world-space transforms
-         (the same FK code MorphGS's own training loop uses).
-      2. bake_animation.py (Blender, headless) keyframes those transforms onto the
-         original rigged file's own armature, applying the same scale correction used
-         when the character was first converted, and exports the animated mesh.
+    (glTF/GLB or FBX) -- not just a rendered video. Always starts with
+    extract_pose_sequence.py, which replays the trained AnimationField/SimpleDeformNet
+    checkpoint frame-by-frame to get absolute per-joint world-space transforms (the same FK
+    code MorphGS's own training loop uses). Then bakes those transforms onto a skinned
+    character mesh in one of two ways:
+      - If the character has its original rigged source file on disk (written by MorphGS:
+        Preprocess Character as _source.<ext>, or placed there directly), bake_animation.py
+        keyframes the pose onto that file's own armature, applying the scale correction used
+        when the character was first converted.
+      - Otherwise (e.g. MorphGS's own bundled demo characters, which ship only as mesh.obj +
+        a RigNet-format rig file with no original rigged file anywhere), the more general
+        build_and_bake_animation.py builds a fresh skinned armature directly from mesh.obj +
+        mesh_ori_rig.txt's own joint positions and per-vertex skin weights -- that file already
+        contains everything needed, since MorphGS's rig format is a full RigNet rig, not just a
+        skeleton.
     Requires MorphGS: Preprocess Character and MorphGS: Train & Render to have already
     been run for this character/scene pair.
     """
@@ -278,6 +285,7 @@ class MorphGSExportAnimatedMesh:
         video_dir = f"{config.MORPHGS_HOME}/demo/videos/{scene_name}"
         rig_path = f"{char_dir}/rigging/mesh_ori_rig.txt"
         meta_path = f"{char_dir}/rigging/conversion_meta.json"
+        mesh_obj_path = f"{char_dir}/mesh.obj"
         ckpt_path = f"{config.MORPHGS_HOME}/output/{experiment}/model/morphgs/deform/iteration_{iterations}.pth"
         render_dir = f"{config.MORPHGS_HOME}/output/{experiment}/model/morphgs/render"
         pose_npz_path = f"{render_dir}/pose_sequence_{iterations}.npz"
@@ -285,7 +293,7 @@ class MorphGSExportAnimatedMesh:
 
         for label, path in [
             ("rig", rig_path),
-            ("conversion metadata", meta_path),
+            ("mesh", mesh_obj_path),
             ("deform checkpoint", ckpt_path),
         ]:
             check = run_bash(f"[ -f '{path}' ] && echo EXISTS || echo MISSING")
@@ -296,22 +304,25 @@ class MorphGSExportAnimatedMesh:
                 )
 
         # mesh_to_morphgs.py (run by MorphGS: Preprocess Character) copies the original rigged
-        # source file into the pipeline as _source.<ext> -- that's what the animation gets
-        # baked onto, since mesh.obj itself has no armature/skinning left in it. Characters
-        # prepared via the "pre-prepared folder" path (or set up manually) may instead just
-        # have the original rigged file sitting directly under char_dir under its own name,
-        # so fall back to any top-level .fbx/.glb/.gltf there.
+        # source file into the pipeline as _source.<ext> when one exists, and characters
+        # prepared via the "pre-prepared folder" path (or set up manually) may instead have it
+        # sitting directly under char_dir under its own name -- either way, that's preferred
+        # for baking since it carries the character's own original bone rest orientations. If
+        # neither exists (e.g. MorphGS's own bundled demo characters), fall back to building a
+        # fresh armature directly from mesh.obj + mesh_ori_rig.txt below.
         source_find = run_bash(
             f"ls '{char_dir}'/_source.* 2>/dev/null | head -1; "
             f"ls '{char_dir}'/*.fbx '{char_dir}'/*.glb '{char_dir}'/*.gltf 2>/dev/null | head -1"
         )
         candidates = [l.strip() for l in source_find.strip().splitlines() if l.strip()]
         original_rigged_path = candidates[0] if candidates else ""
-        if not original_rigged_path:
-            raise RuntimeError(
-                f"No original rigged source file found under {char_dir} (expected _source.fbx/.glb, "
-                f"written by MorphGS: Preprocess Character, or an .fbx/.glb/.gltf placed there directly). "
-                f"This node needs the original rigged file to bake the animation onto, not just mesh.obj."
+        meta_exists = "EXISTS" in run_bash(f"[ -f '{meta_path}' ] && echo EXISTS || echo MISSING")
+        use_original_file = bool(original_rigged_path) and meta_exists
+        if original_rigged_path and not meta_exists:
+            log.append(
+                f"Found {original_rigged_path} but no conversion_meta.json alongside it -- can't "
+                f"apply the matching scale correction, so building a fresh armature from mesh.obj "
+                f"+ mesh_ori_rig.txt instead."
             )
 
         # MorphGS normalizes per-frame time as frame_index / NF (main.py's
@@ -349,11 +360,20 @@ class MorphGSExportAnimatedMesh:
             )
             log.append(extract_out)
 
-            bake_out = run_blender_script(
-                node_script_path("bake_animation.py"),
-                [original_rigged_path, pose_npz_path, meta_path, str(fps), exported_path],
-                timeout=600,
-            )
+            if use_original_file:
+                log.append(f"Baking onto original rigged file: {original_rigged_path}")
+                bake_out = run_blender_script(
+                    node_script_path("bake_animation.py"),
+                    [original_rigged_path, pose_npz_path, meta_path, str(fps), exported_path],
+                    timeout=600,
+                )
+            else:
+                log.append("No usable original rigged file -- building armature from mesh.obj + rig file")
+                bake_out = run_blender_script(
+                    node_script_path("build_and_bake_animation.py"),
+                    [mesh_obj_path, rig_path, pose_npz_path, str(fps), exported_path],
+                    timeout=600,
+                )
             log.append(bake_out)
         else:
             log.append(f"Animated mesh already exists at {exported_path}, skipping (force_reexport=False)")
