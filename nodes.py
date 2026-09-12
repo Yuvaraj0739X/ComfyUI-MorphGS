@@ -239,6 +239,141 @@ class MorphGSTrainAndRender:
         return torch.from_numpy(np.stack(frames))
 
 
+class MorphGSExportAnimatedMesh:
+    """
+    Exports MorphGS's trained per-scene motion as a real, standalone animated 3D mesh
+    (glTF/GLB or FBX) baked onto the ORIGINAL rigged character file -- not just a
+    rendered video. Two steps, both run in the MorphGS environment:
+      1. extract_pose_sequence.py replays the trained AnimationField/SimpleDeformNet
+         checkpoint frame-by-frame to get absolute per-joint world-space transforms
+         (the same FK code MorphGS's own training loop uses).
+      2. bake_animation.py (Blender, headless) keyframes those transforms onto the
+         original rigged file's own armature, applying the same scale correction used
+         when the character was first converted, and exports the animated mesh.
+    Requires MorphGS: Preprocess Character and MorphGS: Train & Render to have already
+    been run for this character/scene pair.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "scene_name": ("STRING", {"default": ""}),
+                "character_name": ("STRING", {"default": ""}),
+                "iterations": ("INT", {"default": 5000, "min": 100, "max": 100000, "step": 100}),
+                "output_format": (["glb", "fbx"], {"default": "glb"}),
+                "force_reexport": ("BOOLEAN", {"default": False}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("mesh_path", "log")
+    FUNCTION = "run"
+    CATEGORY = CATEGORY
+
+    def run(self, scene_name, character_name, iterations, output_format, force_reexport):
+        log = []
+        experiment = f"{scene_name}_to_{character_name}"
+        char_dir = f"{config.MORPHGS_HOME}/demo/characters/{character_name}"
+        video_dir = f"{config.MORPHGS_HOME}/demo/videos/{scene_name}"
+        rig_path = f"{char_dir}/rigging/mesh_ori_rig.txt"
+        meta_path = f"{char_dir}/rigging/conversion_meta.json"
+        ckpt_path = f"{config.MORPHGS_HOME}/output/{experiment}/model/morphgs/deform/iteration_{iterations}.pth"
+        render_dir = f"{config.MORPHGS_HOME}/output/{experiment}/model/morphgs/render"
+        pose_npz_path = f"{render_dir}/pose_sequence_{iterations}.npz"
+        exported_path = f"{render_dir}/animated_mesh_{iterations}.{output_format}"
+
+        for label, path in [
+            ("rig", rig_path),
+            ("conversion metadata", meta_path),
+            ("deform checkpoint", ckpt_path),
+        ]:
+            check = run_bash(f"[ -f '{path}' ] && echo EXISTS || echo MISSING")
+            if "EXISTS" not in check:
+                raise RuntimeError(
+                    f"Required {label} file not found at {path}. Run MorphGS: Preprocess Character "
+                    f"and MorphGS: Train & Render for '{experiment}' first."
+                )
+
+        # mesh_to_morphgs.py (run by MorphGS: Preprocess Character) copies the original rigged
+        # source file into the pipeline as _source.<ext> -- that's what the animation gets
+        # baked onto, since mesh.obj itself has no armature/skinning left in it. Characters
+        # prepared via the "pre-prepared folder" path (or set up manually) may instead just
+        # have the original rigged file sitting directly under char_dir under its own name,
+        # so fall back to any top-level .fbx/.glb/.gltf there.
+        source_find = run_bash(
+            f"ls '{char_dir}'/_source.* 2>/dev/null | head -1; "
+            f"ls '{char_dir}'/*.fbx '{char_dir}'/*.glb '{char_dir}'/*.gltf 2>/dev/null | head -1"
+        )
+        candidates = [l.strip() for l in source_find.strip().splitlines() if l.strip()]
+        original_rigged_path = candidates[0] if candidates else ""
+        if not original_rigged_path:
+            raise RuntimeError(
+                f"No original rigged source file found under {char_dir} (expected _source.fbx/.glb, "
+                f"written by MorphGS: Preprocess Character, or an .fbx/.glb/.gltf placed there directly). "
+                f"This node needs the original rigged file to bake the animation onto, not just mesh.obj."
+            )
+
+        # MorphGS normalizes per-frame time as frame_index / NF (main.py's
+        # cam_t = frame_idx_by_cam[id(view)] / NF), where NF = len(cams_by_view[gt_views[0]])
+        # -- the frame count of the SV4D-*processed* view sequence, NOT the raw input video's
+        # frame count (SV4D's windowed multi-view synthesis can produce a different total, e.g.
+        # 66 processed frames from a 70-frame source video). Extracting with the wrong NF would
+        # silently desync every frame's time embedding from what was actually trained.
+        processed_view0_dir = f"{config.MORPHGS_HOME}/demo/processed_videos/{scene_name}/view_0/color"
+        frame_count_out = run_bash(f"ls '{processed_view0_dir}' | wc -l")
+        num_frames = int(frame_count_out.strip().splitlines()[-1])
+        if num_frames <= 0:
+            raise RuntimeError(
+                f"Could not determine processed frame count from {processed_view0_dir}. "
+                f"Run MorphGS: Preprocess Video for '{scene_name}' first."
+            )
+        fps_probe = run_bash(
+            "python -c \"import cv2,sys; c=cv2.VideoCapture(sys.argv[1]); print(c.get(cv2.CAP_PROP_FPS))\" "
+            f"'{video_dir}/rgb.mp4'"
+        )
+        fps = float(fps_probe.strip().splitlines()[-1]) or 30.0
+        log.append(
+            f"Using NF={num_frames} (from {processed_view0_dir}, matching main.py's training-time "
+            f"normalization) at {fps:.3f} fps (from {video_dir}/rgb.mp4)"
+        )
+
+        export_exists = "EXISTS" in run_bash(f"[ -f '{exported_path}' ] && echo EXISTS || echo MISSING")
+        if force_reexport or not export_exists:
+            extract_out = run_bash(
+                f"mkdir -p '{render_dir}' && "
+                f"PYTHONPATH='{config.MORPHGS_HOME}/src:$PYTHONPATH' "
+                f"python '{node_script_path('extract_pose_sequence.py')}' "
+                f"'{rig_path}' '{ckpt_path}' {num_frames} '{pose_npz_path}'",
+                timeout=600,
+            )
+            log.append(extract_out)
+
+            bake_out = run_blender_script(
+                node_script_path("bake_animation.py"),
+                [original_rigged_path, pose_npz_path, meta_path, str(fps), exported_path],
+                timeout=600,
+            )
+            log.append(bake_out)
+        else:
+            log.append(f"Animated mesh already exists at {exported_path}, skipping (force_reexport=False)")
+
+        final_check = run_bash(f"[ -f '{exported_path}' ] && echo EXISTS || echo MISSING")
+        if "EXISTS" not in final_check:
+            raise RuntimeError(
+                f"Expected animated mesh at {exported_path} but it was not produced. Full log:\n" + "\n".join(log)
+            )
+
+        import folder_paths
+
+        output_dir = folder_paths.get_output_directory()
+        local_mesh_path = os.path.join(output_dir, "morphgs", f"{experiment}_animated.{output_format}")
+        copy_pipeline_file_to_local(exported_path, local_mesh_path)
+        log.append(f"Copied result to {local_mesh_path}")
+
+        return (local_mesh_path, "\n".join(log))
+
+
 _SV4D_CHECKPOINTS = {
     "sv4d": ("stabilityai/sv4d2.0", "sv4d2.safetensors"),
     "sv4d2_8views": ("stabilityai/sv4d2.0", "sv4d2_8views.safetensors"),
@@ -344,6 +479,7 @@ NODE_CLASS_MAPPINGS = {
     "MorphGSPreprocessCharacter": MorphGSPreprocessCharacter,
     "MorphGSPreprocessVideo": MorphGSPreprocessVideo,
     "MorphGSTrainAndRender": MorphGSTrainAndRender,
+    "MorphGSExportAnimatedMesh": MorphGSExportAnimatedMesh,
     "MorphGSSetupSV4D": MorphGSSetupSV4D,
 }
 
@@ -351,5 +487,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MorphGSPreprocessCharacter": "MorphGS: Preprocess Character",
     "MorphGSPreprocessVideo": "MorphGS: Preprocess Video",
     "MorphGSTrainAndRender": "MorphGS: Train & Render",
+    "MorphGSExportAnimatedMesh": "MorphGS: Export Animated Mesh",
     "MorphGSSetupSV4D": "MorphGS: Setup SV4D",
 }

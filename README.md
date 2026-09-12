@@ -21,6 +21,7 @@ pulling the results back into ComfyUI.
 | **MorphGS: Preprocess Character** | Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
 | **MorphGS: Preprocess Video** | Segments a raw video onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. |
 | **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. |
+| **MorphGS: Export Animated Mesh** | Turns a trained experiment into a real, standalone animated 3D asset (`.glb`/`.fbx`) baked onto the *original* rigged character file, instead of only a rendered video. Replays the trained `AnimationField` checkpoint frame-by-frame to get absolute per-joint transforms, then keyframes them onto the original armature in headless Blender and exports. |
 | **MorphGS: Setup SV4D** | One-time environment setup for the SV4D/SP4D dependency used by Preprocess Video: clones Stability AI's `generative-models` repo, installs its dependencies, and downloads the checkpoint for the mode you pick. Not needed for the DINOv2 features Preprocess Character uses (those download automatically via `torch.hub`), and not needed for SkinTokens (that's handled by ComfyUI-SkinTokens's own node). No login or token is required for either the repo clone or the checkpoint download. |
 
 Each node caches its own outputs and skips re-running a stage that's already done (unless
@@ -64,6 +65,9 @@ Set these environment variables before launching ComfyUI (defaults shown):
    `scene_name`, pick an `sv4d_mode`.
 3. **MorphGS: Train & Render** — pass the `scene_name` and `character_name` from the two
    nodes above, set `iterations`, run.
+4. **MorphGS: Export Animated Mesh** *(optional)* — once training is done, pass the same
+   `scene_name`/`character_name`/`iterations` to get a real animated `.glb`/`.fbx` you can
+   drop into Blender, Unity, Unreal, etc. — not just a rendered video.
 
 A ready-to-load example wiring nodes 1-3 together is in
 [`workflows/example_morphgs_pipeline.json`](workflows/example_morphgs_pipeline.json) —

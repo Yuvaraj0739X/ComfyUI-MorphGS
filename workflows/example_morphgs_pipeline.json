@@ -1,6 +1,6 @@
 {
-  "last_node_id": 4,
-  "last_link_id": 2,
+  "last_node_id": 5,
+  "last_link_id": 4,
   "nodes": [
     {
       "id": 1,
@@ -37,7 +37,7 @@
         {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
       ],
       "outputs": [
-        {"name": "character_name", "type": "STRING", "links": [1]},
+        {"name": "character_name", "type": "STRING", "links": [1, 3]},
         {"name": "log", "type": "STRING", "links": []}
       ],
       "properties": {"Node name for S&R": "MorphGSPreprocessCharacter"},
@@ -61,7 +61,7 @@
         {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
       ],
       "outputs": [
-        {"name": "scene_name", "type": "STRING", "links": [2]},
+        {"name": "scene_name", "type": "STRING", "links": [2, 4]},
         {"name": "log", "type": "STRING", "links": []}
       ],
       "properties": {"Node name for S&R": "MorphGSPreprocessVideo"},
@@ -89,11 +89,36 @@
       ],
       "properties": {"Node name for S&R": "MorphGSTrainAndRender"},
       "widgets_values": [5000, false]
+    },
+    {
+      "id": 5,
+      "type": "MorphGSExportAnimatedMesh",
+      "title": "MorphGS: Export Animated Mesh",
+      "pos": [900, 300],
+      "size": [340, 170],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 4},
+        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": 3},
+        {"name": "iterations", "type": "INT", "widget": {"name": "iterations"}, "link": null},
+        {"name": "output_format", "type": "COMBO", "widget": {"name": "output_format"}, "link": null},
+        {"name": "force_reexport", "type": "BOOLEAN", "widget": {"name": "force_reexport"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "mesh_path", "type": "STRING", "links": []},
+        {"name": "log", "type": "STRING", "links": []}
+      ],
+      "properties": {"Node name for S&R": "MorphGSExportAnimatedMesh"},
+      "widgets_values": [5000, "glb", false]
     }
   ],
   "links": [
     {"id": 1, "origin_id": 2, "origin_slot": 0, "target_id": 4, "target_slot": 1, "type": "STRING"},
-    {"id": 2, "origin_id": 3, "origin_slot": 0, "target_id": 4, "target_slot": 0, "type": "STRING"}
+    {"id": 2, "origin_id": 3, "origin_slot": 0, "target_id": 4, "target_slot": 0, "type": "STRING"},
+    {"id": 3, "origin_id": 2, "origin_slot": 0, "target_id": 5, "target_slot": 1, "type": "STRING"},
+    {"id": 4, "origin_id": 3, "origin_slot": 0, "target_id": 5, "target_slot": 0, "type": "STRING"}
   ],
   "groups": [],
   "version": 0.4,
