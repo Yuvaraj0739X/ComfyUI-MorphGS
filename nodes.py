@@ -96,23 +96,58 @@ class MorphGSPreprocessCharacter:
         return (character_name, "\n".join(log))
 
 
+def _resolve_sv4d_selection(selection):
+    """Accepts either a friendly mode name (sv4d/sp4d/sv4d2_8views, the fallback shown when
+    ComfyUI's checkpoints folder can't be listed -- e.g. the Comfy Registry's isolated node
+    scanner) or a real checkpoint filename picked from that folder, and returns
+    (mode, filename) either way."""
+    if selection in _SV4D_CHECKPOINTS:
+        _, filename = _SV4D_CHECKPOINTS[selection]
+        return selection, filename
+    filename = os.path.basename(selection)
+    for mode, (_, fname) in _SV4D_CHECKPOINTS.items():
+        if fname == filename:
+            return mode, fname
+    raise ValueError(f"Unrecognized SV4D checkpoint selection: {selection!r}")
+
+
 class MorphGSPreprocessVideo:
     """
     Prepares a source video for MorphGS: segments + composites onto a white square
     background if needed, then runs SV4D/SP4D multi-view synthesis + feature extraction.
-    Requires the SV4D/SP4D extlibs and the relevant checkpoint to already be present in the
-    MorphGS environment -- if they aren't, the underlying error surfaces verbatim here
-    rather than being caught or hidden.
+
+    sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found in ComfyUI's own
+    models/checkpoints/ folder (via folder_paths.get_filename_list), the same way any other
+    checkpoint-based loader works -- not a fixed list of names. If the selected checkpoint
+    isn't yet present in the pipeline environment (e.g. it was downloaded by MorphGS: Setup
+    SV4D previously into ComfyUI's checkpoints folder but never copied over, or a user placed
+    it there manually), it's copied over automatically before running. Falls back to a plain
+    list of mode names when ComfyUI's checkpoints folder can't be listed (e.g. the Comfy
+    Registry's isolated node scanner, which has no `folder_paths` module at all).
     """
 
     @classmethod
     def INPUT_TYPES(cls):
+        sv4d_options = list(_SV4D_CHECKPOINTS.keys())
+        try:
+            import folder_paths
+
+            known_filenames = {fname for _, fname in _SV4D_CHECKPOINTS.values()}
+            available = [
+                f for f in folder_paths.get_filename_list("checkpoints")
+                if os.path.basename(f) in known_filenames
+            ]
+            if available:
+                sv4d_options = available
+        except Exception:
+            pass  # No folder_paths available -- fall back to plain mode names.
+
         return {
             "required": {
                 "video_path": ("STRING", {"default": "", "multiline": False}),
                 "scene_name": ("STRING", {"default": "my_scene"}),
                 "already_masked": ("BOOLEAN", {"default": False}),
-                "sv4d_mode": (["sv4d", "sp4d", "sv4d2_8views"], {"default": "sv4d"}),
+                "sv4d_mode": (sv4d_options, {"default": sv4d_options[0]}),
                 "fastmode": ("BOOLEAN", {"default": True}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
             }
@@ -125,6 +160,31 @@ class MorphGSPreprocessVideo:
 
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, force_reprocess):
         log = []
+        mode, filename = _resolve_sv4d_selection(sv4d_mode)
+        gm_dir = f"{config.MORPHGS_HOME}/src/extlibs/generative-models"
+        pipeline_ckpt_path = f"{gm_dir}/checkpoints/{filename}"
+
+        pipeline_ckpt_exists = "EXISTS" in run_bash(
+            f"[ -f '{pipeline_ckpt_path}' ] && echo EXISTS || echo MISSING"
+        )
+        if not pipeline_ckpt_exists:
+            local_ckpt_path = None
+            try:
+                import folder_paths
+
+                local_ckpt_path = folder_paths.get_full_path("checkpoints", filename)
+            except Exception:
+                pass
+            if local_ckpt_path and os.path.isfile(local_ckpt_path):
+                run_bash(f"mkdir -p '{gm_dir}/checkpoints'")
+                copy_local_file_into_pipeline(local_ckpt_path, pipeline_ckpt_path)
+                log.append(f"Copied {filename} from ComfyUI's checkpoints folder into the pipeline environment")
+            else:
+                raise RuntimeError(
+                    f"SV4D checkpoint '{filename}' not found in the pipeline environment or in "
+                    f"ComfyUI's models/checkpoints/ folder. Run MorphGS: Setup SV4D first."
+                )
+
         scene_dir = f"{config.MORPHGS_HOME}/demo/videos/{scene_name}"
         rgb_path = f"{scene_dir}/rgb.mp4"
 
@@ -145,7 +205,7 @@ class MorphGSPreprocessVideo:
             f"[ -d '{config.MORPHGS_HOME}/demo/processed_videos/{scene_name}' ] && echo EXISTS || echo MISSING"
         )
         if force_reprocess or not processed_exists:
-            cmd = f"python src/preprocess/preprocess_src.py {rgb_path} --mode {sv4d_mode}"
+            cmd = f"python src/preprocess/preprocess_src.py {rgb_path} --mode {mode}"
             if fastmode:
                 cmd += " --fastmode"
             out = run_bash(cmd, timeout=3600)
@@ -447,9 +507,14 @@ class MorphGSSetupSV4D:
 
     Clones Stability AI's generative-models repo (sp4d branch, which carries both the
     SP4D and SV4D2.0 code paths) into the MorphGS environment, installs its Python
-    dependencies, and downloads the checkpoint for the requested mode. All downloads are
-    anonymous HTTPS -- neither the repo clone nor the Hugging Face checkpoints require any
-    login or token.
+    dependencies, and downloads the checkpoint for the requested mode into ComfyUI's own
+    models/checkpoints/ folder (the standard location and folder_paths convention any other
+    checkpoint uses), then copies it into the pipeline environment's own expected location so
+    generative-models' inference code can find it -- SV4D has no native ComfyUI model
+    architecture to load it through directly (unlike SV3D/SVD, which ComfyUI does support
+    natively), so this is as close to "load it like a normal checkpoint" as it can get. All
+    downloads are anonymous HTTPS -- neither the repo clone nor the Hugging Face checkpoints
+    require any login or token.
 
     generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
     torch.from_numpy/pytorch3d in the MorphGS environment (the same regression class
@@ -517,17 +582,43 @@ class MorphGSSetupSV4D:
 
         hf_repo, filename = _SV4D_CHECKPOINTS[sv4d_mode]
         ckpt_dir = f"{gm_dir}/checkpoints"
-        ckpt_path = f"{ckpt_dir}/{filename}"
-        ckpt_exists = "EXISTS" in run_bash(f"[ -f '{ckpt_path}' ] && echo EXISTS || echo MISSING")
-        if force_reinstall or not ckpt_exists:
+        pipeline_ckpt_path = f"{ckpt_dir}/{filename}"
+
+        # Download into ComfyUI's own models/checkpoints/ folder (the same standard location
+        # and folder_paths.get_filename_list("checkpoints") convention ComfyUI's native
+        # checkpoint-based loaders use), not directly into the pipeline environment -- this
+        # makes the file discoverable/manageable through ComfyUI's own model folder listings
+        # and extra_model_paths.yaml, exactly like any other checkpoint. It's then copied into
+        # the pipeline environment's own expected location below, since generative-models'
+        # own SV4D/SP4D inference code (which this checkpoint actually gets loaded by) needs
+        # it there -- there's no native ComfyUI model architecture for SV4D to load it through
+        # directly (unlike SV3D/SVD, which ComfyUI's own comfy/supported_models.py does have
+        # native support for).
+        import folder_paths
+
+        local_ckpt_dir = folder_paths.get_folder_paths("checkpoints")[0]
+        local_ckpt_path = os.path.join(local_ckpt_dir, filename)
+
+        if force_reinstall or not os.path.isfile(local_ckpt_path):
             url = f"https://huggingface.co/{hf_repo}/resolve/main/{filename}"
-            out = run_bash(
-                f"mkdir -p '{ckpt_dir}' && curl -L -o '{ckpt_path}' '{url}'",
-                timeout=None,
-            )
-            log.append(out)
+            log.append(f"Downloading {url} -> {local_ckpt_path}")
+            os.makedirs(local_ckpt_dir, exist_ok=True)
+            import urllib.request
+
+            urllib.request.urlretrieve(url, local_ckpt_path)
+            log.append(f"Downloaded {local_ckpt_path}")
         else:
-            log.append(f"{ckpt_path} already exists, skipping download")
+            log.append(f"{local_ckpt_path} already exists, skipping download")
+
+        pipeline_ckpt_exists = "EXISTS" in run_bash(
+            f"[ -f '{pipeline_ckpt_path}' ] && echo EXISTS || echo MISSING"
+        )
+        if force_reinstall or not pipeline_ckpt_exists:
+            run_bash(f"mkdir -p '{ckpt_dir}'")
+            copy_local_file_into_pipeline(local_ckpt_path, pipeline_ckpt_path)
+            log.append(f"Copied checkpoint into pipeline environment: {pipeline_ckpt_path}")
+        else:
+            log.append(f"{pipeline_ckpt_path} already exists in the pipeline environment")
 
         return ("\n".join(log),)
 
