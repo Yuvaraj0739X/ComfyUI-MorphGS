@@ -262,6 +262,11 @@ class MorphGSExportAnimatedMesh:
         distortion under real motion if the raw weights are used unmodified.
     Requires MorphGS: Preprocess Character and MorphGS: Train & Render to have already
     been run for this character/scene pair.
+
+    Saves via the same folder_paths.get_save_image_path() convention ComfyUI's own built-in
+    SaveGLB node uses, and returns the matching {"ui": {"3d": [...]}} payload -- so this node
+    shows the result directly in ComfyUI's native interactive 3D viewer widget (the same one
+    SaveGLB/Preview3D use) as soon as it finishes, with no separate downstream node needed.
     """
 
     @classmethod
@@ -280,6 +285,7 @@ class MorphGSExportAnimatedMesh:
     RETURN_NAMES = ("mesh_path", "log")
     FUNCTION = "run"
     CATEGORY = CATEGORY
+    OUTPUT_NODE = True
 
     def run(self, scene_name, character_name, iterations, output_format, force_reexport):
         log = []
@@ -407,12 +413,22 @@ class MorphGSExportAnimatedMesh:
 
         import folder_paths
 
-        output_dir = folder_paths.get_output_directory()
-        local_mesh_path = os.path.join(output_dir, "morphgs", f"{experiment}_animated.{output_format}")
+        # Save via the same folder_paths.get_save_image_path() convention ComfyUI's own
+        # built-in SaveGLB node uses (despite the name, it's a generic numbered-output-path
+        # helper, not image-specific) so the result lands somewhere the frontend can serve it,
+        # and return the matching {"ui": {"3d": [...]}} payload so this node shows the animated
+        # mesh directly in ComfyUI's native interactive 3D viewer -- the same mechanism SaveGLB
+        # uses -- without needing a separate downstream Preview3D node.
+        full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
+            f"morphgs/{experiment}", folder_paths.get_output_directory()
+        )
+        saved_filename = f"{filename}_{counter:05}_.{output_format}"
+        local_mesh_path = os.path.join(full_output_folder, saved_filename)
         copy_pipeline_file_to_local(exported_path, local_mesh_path)
         log.append(f"Copied result to {local_mesh_path}")
 
-        return (local_mesh_path, "\n".join(log))
+        ui = {"3d": [{"filename": saved_filename, "subfolder": subfolder, "type": "output"}]}
+        return {"ui": ui, "result": (local_mesh_path, "\n".join(log))}
 
 
 _SV4D_CHECKPOINTS = {
