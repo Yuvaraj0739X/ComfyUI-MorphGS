@@ -68,6 +68,13 @@ def to_blender_matrix(M_m):
 
 
 def parse_obj(path):
+    """Minimal, tolerant OBJ parser -- only cares about "v " and "f " lines (ignoring
+    vt/vn/o/g/usemtl/etc, and whatever material library mesh.obj references, since neither
+    UVs nor materials affect skinning or posing). Handles both OBJ index conventions: normal
+    1-based absolute indices, and negative indices (relative to the vertex count so far at
+    that point in the file) -- some OBJ exporters emit the latter, and MorphGS's own mesh.obj
+    isn't guaranteed to always be produced by the same tool for every character.
+    """
     verts = []
     faces = []
     with open(path) as f:
@@ -77,8 +84,12 @@ def parse_obj(path):
                 verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
             elif line.startswith("f "):
                 parts = line.split()[1:]
-                face = [int(p.split("/")[0]) - 1 for p in parts]  # OBJ is 1-indexed
-                faces.append(face)
+                face = []
+                for p in parts:
+                    idx = int(p.split("/")[0])
+                    face.append(idx - 1 if idx > 0 else len(verts) + idx)
+                if len(face) >= 3:
+                    faces.append(face)
     return verts, faces
 
 

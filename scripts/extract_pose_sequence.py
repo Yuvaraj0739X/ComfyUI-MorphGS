@@ -69,28 +69,46 @@ def parse_rig(rig_path):
 
 
 def build_parent_tables(joints_pos, bones_idx, root_idx):
-    """Exact replica of RigModel.py's parent_indices/parent_joint_ex construction (the
-    ancestor-chain table calc_rec_abs_T_fast's matrix_chain_product needs), so the FK
-    composition here matches training bit-for-bit."""
-    NJ = len(joints_pos)
-    parent_joint_dict = {c: p for p, c in bones_idx}
+    """Builds the same ancestor-chain table (parent_indices) and direct-parent table
+    (parent_joint_ex) that calc_rec_abs_T_fast's matrix_chain_product needs.
 
-    parent_indices_lists = [[root_idx]]
-    for i in range(len(bones_idx)):
-        j = i + 1
-        inds = []
-        while j >= 0:
-            inds.append(j)
-            j = parent_joint_dict.get(j, -1)
-        parent_indices_lists.append(inds[::-1])
+    This walks each joint's real parent/child edges directly (via parent_joint_dict) rather
+    than assuming hier lines list children in a specific order matching joint declaration
+    index (i.e. joint index i's hier entry being the (i-1)-th line) -- that assumption held
+    for every rig file tested so far, but nothing in the RigNet format actually guarantees
+    it, and a rig file that lists hier edges in a different order (e.g. a different traversal
+    order, or joints declared out of hierarchy order) would silently produce a wrong ancestor
+    chain instead of an error. Walking parent_joint_dict per joint is equivalent when the old
+    ordering assumption holds, and correct regardless of hier-line order otherwise.
+    """
+    NJ = len(joints_pos)
+    parent_joint_dict = {c: p for p, c in bones_idx}  # child_idx -> parent_idx (root excluded)
+
+    parent_indices_lists = []
+    for j in range(NJ):
+        chain = []
+        cur = j
+        seen = set()
+        while True:
+            if cur in seen:
+                raise ValueError(f"Cycle detected in rig hierarchy while resolving joint {j}")
+            seen.add(cur)
+            chain.append(cur)
+            if cur == root_idx or cur not in parent_joint_dict:
+                break
+            cur = parent_joint_dict[cur]
+        parent_indices_lists.append(chain[::-1])  # root-first order
 
     max_depth = max(len(x) for x in parent_indices_lists)
-    parent_indices = torch.zeros((len(parent_indices_lists), max_depth), dtype=torch.long) - 1
+    parent_indices = torch.zeros((NJ, max_depth), dtype=torch.long) - 1
     for i, inds in enumerate(parent_indices_lists):
         parent_indices[i, :len(inds)] = torch.tensor(inds, dtype=torch.long)
 
+    # Every joint except the root has a direct parent; the root has none, so it's mapped to
+    # itself (matching the "hier <root> <root>" self-loop convention some rig files use
+    # explicitly). A hardcoded default of 0 here would be wrong whenever root_idx != 0.
     parent_joint_ex = torch.tensor(
-        [parent_joint_dict.get(i, 0) for i in range(NJ)], dtype=torch.long
+        [parent_joint_dict.get(i, root_idx) for i in range(NJ)], dtype=torch.long
     )
     return parent_indices, parent_joint_ex
 
