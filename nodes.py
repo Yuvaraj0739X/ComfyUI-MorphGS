@@ -44,6 +44,9 @@ class MorphGSPreprocessCharacter:
     RETURN_NAMES = ("character_name", "log")
     FUNCTION = "run"
     CATEGORY = CATEGORY
+    OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
+    # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
+    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
 
     def run(self, character_source_path, character_name, target_height, force_reprocess):
         log = []
@@ -69,9 +72,20 @@ class MorphGSPreprocessCharacter:
                 log.append("mesh.obj already exists, skipping mesh conversion (force_reprocess=False)")
         else:
             # Treat character_source_path as a pre-prepared folder (mesh.obj + rigging/mesh_ori_rig.txt).
+            # A user may point this directly at the character's own canonical location (e.g.
+            # they already staged files there by hand, or re-ran with the same path) -- `cp -r`
+            # a directory into itself fails outright ("are the same file"), so check first via
+            # realpath (robust to relative paths/symlinks) rather than erroring on that case.
             src_dir = to_pipeline_path(character_source_path)
-            run_bash(f"mkdir -p '{char_dir}' && cp -r '{src_dir}/.' '{char_dir}/'")
-            log.append(f"Copied prepared character folder into {char_dir}")
+            same_dir = "SAME" in run_bash(
+                f"[ -d '{char_dir}' ] && [ \"$(realpath '{src_dir}')\" = \"$(realpath '{char_dir}')\" ] "
+                f"&& echo SAME || echo DIFFERENT"
+            )
+            if same_dir:
+                log.append(f"character_source_path is already {char_dir}, nothing to copy")
+            else:
+                run_bash(f"mkdir -p '{char_dir}' && cp -r '{src_dir}/.' '{char_dir}/'")
+                log.append(f"Copied prepared character folder into {char_dir}")
 
         rig_check = run_bash(
             f"[ -f '{char_dir}/mesh.obj' ] && [ -f '{char_dir}/rigging/mesh_ori_rig.txt' ] "
@@ -157,6 +171,9 @@ class MorphGSPreprocessVideo:
     RETURN_NAMES = ("scene_name", "log")
     FUNCTION = "run"
     CATEGORY = CATEGORY
+    OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
+    # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
+    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
 
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, force_reprocess):
         log = []
@@ -237,6 +254,9 @@ class MorphGSTrainAndRender:
     RETURN_NAMES = ("video_path", "frames", "log")
     FUNCTION = "run"
     CATEGORY = CATEGORY
+    OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
+    # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
+    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
 
     def run(self, scene_name, character_name, iterations, force_retrain):
         log = []
@@ -537,6 +557,9 @@ class MorphGSSetupSV4D:
     RETURN_NAMES = ("log",)
     FUNCTION = "run"
     CATEGORY = CATEGORY
+    OUTPUT_NODE = True  # Meant to be run standalone, with nothing consuming its "log" output --
+    # without this, ComfyUI's execution graph would prune it out entirely and it would never
+    # actually run when queued (confirmed: submitting it alone raised "Prompt has no outputs").
 
     def run(self, sv4d_mode, force_reinstall):
         log = []

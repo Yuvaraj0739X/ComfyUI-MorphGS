@@ -26,7 +26,10 @@ pulling the results back into ComfyUI.
 
 Each node caches its own outputs and skips re-running a stage that's already done (unless
 `force_reprocess`/`force_retrain` is set), so you can safely re-run an upstream node without
-redoing an expensive downstream step.
+redoing an expensive downstream step. Every node is also an `OUTPUT_NODE`, so any one of them
+can be queued and will actually execute on its own while you're building out a graph step by
+step -- without this, ComfyUI's execution engine prunes out a node with nothing downstream
+consuming its result, and queuing it alone silently does nothing.
 
 ## Requirements
 
