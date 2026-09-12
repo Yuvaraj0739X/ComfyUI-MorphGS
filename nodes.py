@@ -256,7 +256,10 @@ class MorphGSExportAnimatedMesh:
         build_and_bake_animation.py builds a fresh skinned armature directly from mesh.obj +
         mesh_ori_rig.txt's own joint positions and per-vertex skin weights -- that file already
         contains everything needed, since MorphGS's rig format is a full RigNet rig, not just a
-        skeleton.
+        skeleton. resolve_skinning_weights.py runs first in this case, since some characters'
+        configs apply heat-diffusion smoothing (or heat-based recalculation) to the rig file's
+        raw skin weights before training -- invisible at rest pose but causing severe mesh
+        distortion under real motion if the raw weights are used unmodified.
     Requires MorphGS: Preprocess Character and MorphGS: Train & Render to have already
     been run for this character/scene pair.
     """
@@ -369,9 +372,27 @@ class MorphGSExportAnimatedMesh:
                 )
             else:
                 log.append("No usable original rigged file -- building armature from mesh.obj + rig file")
+
+                # Some characters' configs apply heat-diffusion smoothing (or heat-based
+                # recalculation) to mesh_ori_rig.txt's raw skin weights before training --
+                # invisible at rest pose but causing severe mesh distortion under real motion
+                # if skipped (confirmed on MorphGS's own bundled chickenDC/moose1DOG demo
+                # characters). Resolve the actual weights used before baking.
+                exp_config_path = f"{config.MORPHGS_HOME}/configs/demo/{experiment}.yaml"
+                base_config_path = f"{config.MORPHGS_HOME}/configs/base.yaml"
+                resolved_weights_path = f"{render_dir}/resolved_skinning_weights.npz"
+                resolve_out = run_bash(
+                    f"PYTHONPATH='{config.MORPHGS_HOME}/src:$PYTHONPATH' "
+                    f"python '{node_script_path('resolve_skinning_weights.py')}' "
+                    f"'{mesh_obj_path}' '{rig_path}' '{exp_config_path}' '{base_config_path}' "
+                    f"'{resolved_weights_path}'",
+                    timeout=600,
+                )
+                log.append(resolve_out)
+
                 bake_out = run_blender_script(
                     node_script_path("build_and_bake_animation.py"),
-                    [mesh_obj_path, rig_path, pose_npz_path, str(fps), exported_path],
+                    [mesh_obj_path, rig_path, pose_npz_path, str(fps), exported_path, resolved_weights_path],
                     timeout=600,
                 )
             log.append(bake_out)

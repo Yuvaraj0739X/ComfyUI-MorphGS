@@ -9,6 +9,12 @@ That's everything needed to reconstruct a working skinned armature from scratch,
 works for ANY MorphGS character, including ones (like MorphGS's own bundled demo characters)
 that were never converted from a Blender-rigged source file and have no such file on disk.
 
+Skin weights: pass resolve_skinning_weights.py's output as the optional 6th argument to use
+smoothed weights matching what MorphGS actually trained with (see that script's docstring --
+some characters' configs apply heat-diffusion smoothing to the raw rig-file weights, which is
+invisible at rest pose but causes severe distortion under real motion if skipped). Falls back
+to the raw "skin" lines in mesh_ori_rig.txt, 1:1 by vertex index, if omitted.
+
 Coordinate-space note: MorphGS's own mesh.obj/rig-file convention is Y-up (confirmed
 empirically -- across both mesh_to_morphgs.py-converted characters and MorphGS's own bundled
 demo characters, the joint-position spread is always largest along Y), not Blender's native
@@ -19,13 +25,16 @@ must be converted into Blender's Z-up space before use. No scale correction is n
 though (unlike bake_animation.py's scale_fix): there's no external file's own unit convention
 to reconcile with, since mesh + rig + pose sequence are all already in one consistent scale.
 
-mesh.obj is parsed by hand (not via Blender's OBJ importer) specifically to avoid any
-importer-side axis-convention guessing -- the raw (x, y, z) triples in the file must land in
-Blender unchanged, since mesh_ori_rig.txt's joint positions are in that exact same raw space.
+mesh.obj is parsed by hand (not via Blender's OBJ importer, and not via trimesh -- trimesh's
+OBJ loader can expand vertex count for per-face-corner UV coordinates, which does NOT match
+mesh_ori_rig.txt's raw per-"v"-line vertex indexing that the "skin" lines assume) to avoid any
+importer-side vertex-reindexing or axis-convention guessing: the raw (x, y, z) triples in the
+file must land in Blender unchanged, one Blender vertex per raw "v" line, since
+mesh_ori_rig.txt's joint positions and skin weights are both in that exact same raw space.
 
 Run inside Blender (headless):
     blender --background --python build_and_bake_animation.py -- <mesh.obj> <mesh_ori_rig.txt> \
-        <pose_sequence.npz> <fps> <output.fbx|.glb>
+        <pose_sequence.npz> <fps> <output.fbx|.glb> [resolved_skinning_weights.npz]
 """
 import os
 import sys
@@ -41,6 +50,7 @@ rig_path = argv[1]
 npz_path = argv[2]
 fps = float(argv[3])
 output_path = argv[4]
+resolved_weights_path = argv[5] if len(argv) > 5 else None
 
 
 # MorphGS rig-space (Y-up) -> Blender space (Z-up): morphgs_vec = P @ blender_vec, the same
@@ -69,11 +79,10 @@ def to_blender_matrix(M_m):
 
 def parse_obj(path):
     """Minimal, tolerant OBJ parser -- only cares about "v " and "f " lines (ignoring
-    vt/vn/o/g/usemtl/etc, and whatever material library mesh.obj references, since neither
-    UVs nor materials affect skinning or posing). Handles both OBJ index conventions: normal
-    1-based absolute indices, and negative indices (relative to the vertex count so far at
-    that point in the file) -- some OBJ exporters emit the latter, and MorphGS's own mesh.obj
-    isn't guaranteed to always be produced by the same tool for every character.
+    vt/vn/o/g/usemtl/etc), and triangulates any face with more than 3 vertices fan-style, so
+    the output matches what resolve_skinning_weights.py's own parser produces exactly. Handles
+    both OBJ index conventions: normal 1-based absolute indices, and negative indices
+    (relative to the vertex count so far at that point in the file).
     """
     verts = []
     faces = []
@@ -89,7 +98,9 @@ def parse_obj(path):
                     idx = int(p.split("/")[0])
                     face.append(idx - 1 if idx > 0 else len(verts) + idx)
                 if len(face) >= 3:
-                    faces.append(face)
+                    faces.append(face[:3])
+                    for extra in range(3, len(face)):
+                        faces.append([face[0], face[extra - 1], face[extra]])
     return verts, faces
 
 
@@ -129,6 +140,20 @@ joints_name, joints_pos, bones, root_name, skin = parse_rig(rig_path)
 print(f"Parsed mesh: {len(verts)} verts, {len(faces)} faces")
 print(f"Parsed rig: {len(joints_name)} joints, {len(bones)} hier entries, {len(skin)} skinned verts")
 
+if resolved_weights_path:
+    resolved = np.load(resolved_weights_path, allow_pickle=True)
+    resolved_weights = resolved["weights"]  # (NV, NJ), same vertex order as parse_obj above
+    resolved_joint_names = [str(n) for n in resolved["joint_names"]]
+    if resolved_joint_names != joints_name or resolved_weights.shape[0] != len(verts):
+        raise RuntimeError(
+            f"resolved_skinning_weights.npz doesn't match this mesh/rig: "
+            f"{resolved_weights.shape[0]} verts/{len(resolved_joint_names)} joints vs "
+            f"{len(verts)} verts/{len(joints_name)} joints expected."
+        )
+    print(f"Using resolved (smoothed) skinning weights from {resolved_weights_path}")
+else:
+    resolved_weights = None
+
 children_of = {}
 for parent, child in bones:
     if parent == child:
@@ -164,9 +189,9 @@ for name in joints_name:
     if kids:
         tail = np.mean([joint_pos_by_name[k] for k in kids], axis=0)
         if np.linalg.norm(tail - head) < 1e-6:
-            tail = head + np.array([0.0, 0.01, 0.0])
+            tail = head + np.array([0.0, 0.0, 0.01])
     else:
-        tail = head + np.array([0.0, 0.01, 0.0])
+        tail = head + np.array([0.0, 0.0, 0.01])
     eb.head = tuple(head)
     eb.tail = tuple(tail)
     edit_bones[name] = eb
@@ -181,16 +206,23 @@ bpy.ops.object.mode_set(mode='OBJECT')
 
 rest_matrices = {b.name: np.array(b.matrix_local) for b in arm_data.bones}
 
-# --- Vertex groups + skin weights, straight from mesh_ori_rig.txt's own "skin" lines. ---
+# --- Vertex groups + skin weights: resolved (smoothed) weights if provided, else the raw
+# "skin" lines from mesh_ori_rig.txt directly. ---
 vgroups = {name: mesh_obj.vertex_groups.new(name=name) for name in joints_name}
-for v_idx, pairs in skin.items():
-    for joint_name, weight in pairs:
-        if weight > 0:
-            vgroups[joint_name].add([v_idx], weight, 'REPLACE')
+if resolved_weights is not None:
+    nz_v, nz_j = np.nonzero(resolved_weights > 1e-5)
+    for v_idx, j_idx in zip(nz_v.tolist(), nz_j.tolist()):
+        vgroups[joints_name[j_idx]].add([v_idx], float(resolved_weights[v_idx, j_idx]), 'REPLACE')
+else:
+    for v_idx, pairs in skin.items():
+        for joint_name, weight in pairs:
+            if weight > 0:
+                vgroups[joint_name].add([v_idx], weight, 'REPLACE')
 
 mesh_obj.parent = arm_obj
 mod = mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
 mod.object = arm_obj
+mod.use_deform_preserve_volume = True
 
 # --- Load the trained pose sequence and keyframe it. Already in this exact same rig-space --
 # no axis remap or scale correction needed, unlike bake_animation.py. ---

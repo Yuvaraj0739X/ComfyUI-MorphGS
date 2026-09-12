@@ -31,8 +31,7 @@ def parse_rig(rig_path):
     an explicit "root <name>" directive line, while MorphGS's own bundled rig files instead
     mark the root via a "hier <root> <root>" self-loop and have no "root" line at all. Both
     are normalized here to a plain root_idx, with the self-loop entry dropped from the real
-    parent/child edge list (it isn't one, and its presence would throw off the sequential
-    child-index assumption build_parent_tables relies on).
+    parent/child edge list (it isn't one).
     """
     joints_name = []
     joints_pos = []
@@ -74,12 +73,9 @@ def build_parent_tables(joints_pos, bones_idx, root_idx):
 
     This walks each joint's real parent/child edges directly (via parent_joint_dict) rather
     than assuming hier lines list children in a specific order matching joint declaration
-    index (i.e. joint index i's hier entry being the (i-1)-th line) -- that assumption held
-    for every rig file tested so far, but nothing in the RigNet format actually guarantees
-    it, and a rig file that lists hier edges in a different order (e.g. a different traversal
-    order, or joints declared out of hierarchy order) would silently produce a wrong ancestor
-    chain instead of an error. Walking parent_joint_dict per joint is equivalent when the old
-    ordering assumption holds, and correct regardless of hier-line order otherwise.
+    index -- that assumption doesn't hold for every rig file (confirmed on MorphGS's own
+    chickenDC demo character, whose hier lines follow a depth-first traversal, not
+    declaration order) and would otherwise silently produce a wrong ancestor chain.
     """
     NJ = len(joints_pos)
     parent_joint_dict = {c: p for p, c in bones_idx}  # child_idx -> parent_idx (root excluded)
@@ -105,8 +101,7 @@ def build_parent_tables(joints_pos, bones_idx, root_idx):
         parent_indices[i, :len(inds)] = torch.tensor(inds, dtype=torch.long)
 
     # Every joint except the root has a direct parent; the root has none, so it's mapped to
-    # itself (matching the "hier <root> <root>" self-loop convention some rig files use
-    # explicitly). A hardcoded default of 0 here would be wrong whenever root_idx != 0.
+    # itself. A hardcoded default of 0 here would be wrong whenever root_idx != 0.
     parent_joint_ex = torch.tensor(
         [parent_joint_dict.get(i, root_idx) for i in range(NJ)], dtype=torch.long
     )
