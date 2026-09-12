@@ -54,6 +54,24 @@ Set these environment variables before launching ComfyUI (defaults shown):
 | `MORPHGS_BLENDER_BIN` | `blender` | Path to (or bare name of) the Blender executable |
 | `MORPHGS_WSL_DISTRO` | `Ubuntu-22.04` | WSL distro name (only used when `MORPHGS_BACKEND=wsl`) |
 
+### Checkpoint folder discoverability
+
+On load, this package registers two extra ComfyUI model-folder categories purely for
+visibility in ComfyUI's own model folder listings — this doesn't change how any node loads
+these files (they're still read from inside the MorphGS environment via the pipeline itself,
+which may be a different machine entirely), it just makes them show up:
+
+| Category | Points at |
+|---|---|
+| `morphgs_sv4d_checkpoints` | `$MORPHGS_HOME/src/extlibs/generative-models/checkpoints` |
+| `morphgs_deform_checkpoints` | `$MORPHGS_HOME/output` (every trained experiment's checkpoints) |
+
+Registration is skipped silently if the resolved path isn't reachable from wherever ComfyUI
+itself runs (e.g. a fully remote MorphGS deployment with no local mount) — that's a normal
+configuration, not an error. On setups where MorphGS lives on a different drive, you can also
+point ComfyUI's standard `extra_model_paths.yaml` at these same directories under whatever
+category names you like.
+
 ## Typical workflow
 
 0. **MorphGS: Setup SV4D** (one-time, only if you'll use Preprocess Video) — pick your

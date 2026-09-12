@@ -75,6 +75,20 @@ def to_pipeline_path(local_path: str) -> str:
     return f"/mnt/{drive.rstrip(':').lower()}{rest.replace(chr(92), '/')}"
 
 
+def to_local_path(pipeline_path: str) -> str:
+    """
+    Reverse of to_pipeline_path: translate a path from the MorphGS pipeline environment's
+    filesystem view into a path THIS process (ComfyUI's own Python) can read directly. On a
+    native Linux deployment this is a no-op (ComfyUI and MorphGS run on the same machine, so
+    it's the same path already); MORPHGS_BACKEND=wsl additionally maps a WSL-side absolute
+    path onto its \\\\wsl.localhost\\<distro>\\... UNC equivalent, so ComfyUI (running natively
+    on Windows in that dev setup) can list/browse it directly.
+    """
+    if config.BACKEND != "wsl" or not pipeline_path.startswith("/"):
+        return pipeline_path
+    return f"\\\\wsl.localhost\\{config.WSL_DISTRO}" + pipeline_path.replace("/", "\\")
+
+
 def copy_local_file_into_pipeline(local_src_path: str, pipeline_dest_path: str):
     """Copy a file from ComfyUI's filesystem into the MorphGS environment's filesystem."""
     if config.BACKEND != "wsl":
