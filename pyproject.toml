@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-morphgs"
 description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer. Orchestrates character rig conversion, DINOv2/SV4D preprocessing, and gsplat-based training against a MorphGS environment."
-version = "1.2.1"
+version = "1.2.2"
 license = {file = "LICENSE"}
 dependencies = ["numpy", "opencv-python"]
 

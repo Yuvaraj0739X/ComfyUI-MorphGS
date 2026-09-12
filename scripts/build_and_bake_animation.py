@@ -91,8 +91,13 @@ def parse_obj(path):
     at all). Triangulates any face with more than 3 vertices fan-style. Handles both OBJ index
     conventions: normal 1-based absolute indices, and negative indices (relative to the vertex/
     UV count so far at that point in the file).
+
+    Also handles trimesh's own OBJ-with-vertex-colors extension ("v x y z r g b", 7 fields
+    instead of 4) -- confirmed on MorphGS's own bundled spot demo character, which has no
+    material/UV data at all and encodes its yellow/gray coloring this way instead.
     """
     verts = []
+    vertex_colors = []  # (r, g, b) per vertex, only populated if "v" lines carry 7 fields
     uvs = []
     faces = []  # list of vertex-index triples
     face_uvs = []  # list of uv-index triples (or None per face if that face has no vt data)
@@ -101,6 +106,8 @@ def parse_obj(path):
             if line.startswith("v "):
                 parts = line.split()
                 verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                if len(parts) >= 7:
+                    vertex_colors.append((float(parts[4]), float(parts[5]), float(parts[6])))
             elif line.startswith("vt "):
                 parts = line.split()
                 uvs.append((float(parts[1]), float(parts[2])))
@@ -125,7 +132,8 @@ def parse_obj(path):
                         face_uvs.append(
                             [face_uv[0], face_uv[extra - 1], face_uv[extra]] if face_uv else None
                         )
-    return verts, faces, uvs, face_uvs
+    vertex_colors = vertex_colors if len(vertex_colors) == len(verts) else []
+    return verts, faces, uvs, face_uvs, vertex_colors
 
 
 def parse_mtl_texture(mesh_obj_path):
@@ -187,10 +195,11 @@ def parse_rig(path):
     return joints_name, joints_pos, bones, root_name, skin
 
 
-verts, faces, uvs, face_uvs = parse_obj(mesh_obj_path)
+verts, faces, uvs, face_uvs, vertex_colors = parse_obj(mesh_obj_path)
 texture_path = parse_mtl_texture(mesh_obj_path)
 joints_name, joints_pos, bones, root_name, skin = parse_rig(rig_path)
-print(f"Parsed mesh: {len(verts)} verts, {len(faces)} faces, {len(uvs)} UVs")
+print(f"Parsed mesh: {len(verts)} verts, {len(faces)} faces, {len(uvs)} UVs, "
+      f"{len(vertex_colors)} vertex colors")
 print(f"Texture: {texture_path}")
 print(f"Parsed rig: {len(joints_name)} joints, {len(bones)} hier entries, {len(skin)} skinned verts")
 
@@ -236,7 +245,17 @@ if uvs and all(fu is not None for fu in face_uvs):
 else:
     print("No UV data found in mesh.obj -- exported mesh will have no texture coordinates.")
 
-# --- Material + texture, from the .mtl file's "map_Kd" image if present. ---
+# --- Per-vertex color, if mesh.obj used trimesh's "v x y z r g b" extension instead of a
+# UV+image texture (confirmed on MorphGS's own bundled spot demo character). A genuinely
+# per-vertex attribute, so it's set directly from vertex index, no loop/corner indirection
+# needed (unlike UVs above). ---
+if vertex_colors:
+    color_attr = mesh_data.color_attributes.new(name="Col", type='FLOAT_COLOR', domain='POINT')
+    for i, (r, g, b) in enumerate(vertex_colors):
+        color_attr.data[i].color = (r, g, b, 1.0)
+
+# --- Material: a UV+image texture from the .mtl file's "map_Kd" if present, else vertex
+# colors if present, else left untextured. ---
 if texture_path:
     mat = bpy.data.materials.new(name="MorphGSMaterial")
     mat.use_nodes = True
@@ -246,8 +265,17 @@ if texture_path:
     mat.node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
     mesh_data.materials.append(mat)
     print(f"Applied material with texture: {texture_path}")
+elif vertex_colors:
+    mat = bpy.data.materials.new(name="MorphGSMaterial")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    color_node = mat.node_tree.nodes.new("ShaderNodeVertexColor")
+    color_node.layer_name = "Col"
+    mat.node_tree.links.new(color_node.outputs["Color"], bsdf.inputs["Base Color"])
+    mesh_data.materials.append(mat)
+    print("Applied material from per-vertex colors (no UV/image texture in source)")
 else:
-    print("No texture found (no .mtl/map_Kd next to mesh.obj) -- exported mesh will be untextured.")
+    print("No texture or vertex colors found -- exported mesh will be untextured.")
 
 # --- Build the armature: one bone per joint, head = joint rest position, tail = average of
 # its children's positions (or a small fixed offset for leaf joints, since a zero-length bone
