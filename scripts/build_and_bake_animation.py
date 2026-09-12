@@ -31,6 +31,11 @@ mesh_ori_rig.txt's raw per-"v"-line vertex indexing that the "skin" lines assume
 importer-side vertex-reindexing or axis-convention guessing: the raw (x, y, z) triples in the
 file must land in Blender unchanged, one Blender vertex per raw "v" line, since
 mesh_ori_rig.txt's joint positions and skin weights are both in that exact same raw space.
+UVs are still read from the file's "vt" lines and each face's own v/vt corner indices (a
+per-loop attribute, independent of the per-vertex position indexing used for topology/skin
+weights, so reading it doesn't reintroduce the trimesh vertex-count mismatch), and a material
+is built from the referenced .mtl's "map_Kd" image if present, so textured characters (like
+MorphGS's own bundled chickenDC/moose1DOG/spot) keep their appearance through this path too.
 
 Run inside Blender (headless):
     blender --background --python build_and_bake_animation.py -- <mesh.obj> <mesh_ori_rig.txt> \
@@ -78,30 +83,77 @@ def to_blender_matrix(M_m):
 
 
 def parse_obj(path):
-    """Minimal, tolerant OBJ parser -- only cares about "v " and "f " lines (ignoring
-    vt/vn/o/g/usemtl/etc), and triangulates any face with more than 3 vertices fan-style, so
-    the output matches what resolve_skinning_weights.py's own parser produces exactly. Handles
-    both OBJ index conventions: normal 1-based absolute indices, and negative indices
-    (relative to the vertex count so far at that point in the file).
+    """Minimal, tolerant OBJ parser. Vertex/face topology (used for both mesh geometry and
+    skin-weight indexing) only ever comes from "v "/"f " lines' vertex-position index, matching
+    resolve_skinning_weights.py's own parser exactly. UVs are read separately, from "vt" lines
+    plus each face's own per-corner v/vt index pairs (a genuinely per-loop attribute in OBJ,
+    independent of vertex-position indexing, so reading it doesn't affect vertex count/topology
+    at all). Triangulates any face with more than 3 vertices fan-style. Handles both OBJ index
+    conventions: normal 1-based absolute indices, and negative indices (relative to the vertex/
+    UV count so far at that point in the file).
     """
     verts = []
-    faces = []
+    uvs = []
+    faces = []  # list of vertex-index triples
+    face_uvs = []  # list of uv-index triples (or None per face if that face has no vt data)
     with open(path) as f:
         for line in f:
             if line.startswith("v "):
                 parts = line.split()
                 verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            elif line.startswith("vt "):
+                parts = line.split()
+                uvs.append((float(parts[1]), float(parts[2])))
             elif line.startswith("f "):
                 parts = line.split()[1:]
                 face = []
+                face_uv = []
                 for p in parts:
-                    idx = int(p.split("/")[0])
-                    face.append(idx - 1 if idx > 0 else len(verts) + idx)
+                    tokens = p.split("/")
+                    v_idx = int(tokens[0])
+                    face.append(v_idx - 1 if v_idx > 0 else len(verts) + v_idx)
+                    if len(tokens) >= 2 and tokens[1]:
+                        vt_idx = int(tokens[1])
+                        face_uv.append(vt_idx - 1 if vt_idx > 0 else len(uvs) + vt_idx)
+                    else:
+                        face_uv = None
                 if len(face) >= 3:
                     faces.append(face[:3])
+                    face_uvs.append(face_uv[:3] if face_uv else None)
                     for extra in range(3, len(face)):
                         faces.append([face[0], face[extra - 1], face[extra]])
-    return verts, faces
+                        face_uvs.append(
+                            [face_uv[0], face_uv[extra - 1], face_uv[extra]] if face_uv else None
+                        )
+    return verts, faces, uvs, face_uvs
+
+
+def parse_mtl_texture(mesh_obj_path):
+    """Find the referenced .mtl file (via mesh.obj's own "mtllib" line, falling back to the
+    same basename with a .mtl extension) and return the absolute path of its "map_Kd" image,
+    resolved relative to mesh.obj's own directory, or None if there's no material/texture."""
+    mesh_dir = os.path.dirname(os.path.abspath(mesh_obj_path))
+    mtl_name = None
+    with open(mesh_obj_path) as f:
+        for line in f:
+            if line.startswith("mtllib"):
+                mtl_name = line.split(maxsplit=1)[1].strip()
+                break
+    candidates = []
+    if mtl_name:
+        candidates.append(os.path.join(mesh_dir, mtl_name))
+    candidates.append(os.path.splitext(mesh_obj_path)[0] + ".mtl")
+
+    for mtl_path in candidates:
+        if not os.path.isfile(mtl_path):
+            continue
+        with open(mtl_path) as f:
+            for line in f:
+                if line.strip().startswith("map_Kd"):
+                    tex_name = line.split(maxsplit=1)[1].strip()
+                    tex_path = os.path.join(mesh_dir, tex_name)
+                    return tex_path if os.path.isfile(tex_path) else None
+    return None
 
 
 def parse_rig(path):
@@ -135,9 +187,11 @@ def parse_rig(path):
     return joints_name, joints_pos, bones, root_name, skin
 
 
-verts, faces = parse_obj(mesh_obj_path)
+verts, faces, uvs, face_uvs = parse_obj(mesh_obj_path)
+texture_path = parse_mtl_texture(mesh_obj_path)
 joints_name, joints_pos, bones, root_name, skin = parse_rig(rig_path)
-print(f"Parsed mesh: {len(verts)} verts, {len(faces)} faces")
+print(f"Parsed mesh: {len(verts)} verts, {len(faces)} faces, {len(uvs)} UVs")
+print(f"Texture: {texture_path}")
 print(f"Parsed rig: {len(joints_name)} joints, {len(bones)} hier entries, {len(skin)} skinned verts")
 
 if resolved_weights_path:
@@ -169,6 +223,31 @@ mesh_data.from_pydata(verts_blender, [], faces)
 mesh_data.update()
 mesh_obj = bpy.data.objects.new("MorphGSMesh", mesh_data)
 bpy.context.collection.objects.link(mesh_obj)
+
+# --- UVs: a per-face-corner (loop) attribute, set directly from each face's own v/vt index
+# pairs -- independent of the vertex-position indexing above, so this doesn't reintroduce any
+# vertex-count mismatch with the skin weights. ---
+if uvs and all(fu is not None for fu in face_uvs):
+    uv_layer = mesh_data.uv_layers.new(name="UVMap")
+    for poly in mesh_data.polygons:
+        face_uv_indices = face_uvs[poly.index]
+        for loop_idx, uv_idx in zip(poly.loop_indices, face_uv_indices):
+            uv_layer.data[loop_idx].uv = uvs[uv_idx]
+else:
+    print("No UV data found in mesh.obj -- exported mesh will have no texture coordinates.")
+
+# --- Material + texture, from the .mtl file's "map_Kd" image if present. ---
+if texture_path:
+    mat = bpy.data.materials.new(name="MorphGSMaterial")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    tex_node = mat.node_tree.nodes.new("ShaderNodeTexImage")
+    tex_node.image = bpy.data.images.load(texture_path)
+    mat.node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+    mesh_data.materials.append(mat)
+    print(f"Applied material with texture: {texture_path}")
+else:
+    print("No texture found (no .mtl/map_Kd next to mesh.obj) -- exported mesh will be untextured.")
 
 # --- Build the armature: one bone per joint, head = joint rest position, tail = average of
 # its children's positions (or a small fixed offset for leaf joints, since a zero-length bone
@@ -291,6 +370,8 @@ if out_ext == ".fbx":
         bake_anim_use_nla_strips=False,
         bake_anim_use_all_actions=False,
         bake_anim_force_startend_keying=True,
+        path_mode='COPY',
+        embed_textures=True,
     )
 elif out_ext in (".glb", ".gltf"):
     bpy.ops.export_scene.gltf(

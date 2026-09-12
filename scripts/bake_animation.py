@@ -182,6 +182,8 @@ if out_ext == ".fbx":
         bake_anim_use_nla_strips=False,
         bake_anim_use_all_actions=False,
         bake_anim_force_startend_keying=True,
+        path_mode='COPY',
+        embed_textures=True,
     )
 elif out_ext in (".glb", ".gltf"):
     bpy.ops.export_scene.gltf(
