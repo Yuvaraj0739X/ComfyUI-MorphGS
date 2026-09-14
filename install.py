@@ -30,6 +30,15 @@ MorphGS's own source (a customized fork with fixes: DINOv2-only feature matching
 rendering, topology-aware ARAP regularization) ships bundled in this package's own
 morphgs_src/ directory -- no separate clone step, no separate repo to keep in sync. This
 script only installs *dependencies* against that already-present source.
+
+This script also clones and installs Stability AI's `generative-models` (the SV4D/SP4D code
+MorphGS: Preprocess Video needs), so that's ready with no extra setup step of its own. There is
+deliberately no node that downloads the actual SV4D/SP4D checkpoint file for you -- SV4D has no
+native ComfyUI model architecture (unlike SV3D/SVD, which ComfyUI does support natively), so it
+couldn't be loaded through the built-in Load Checkpoint node either way. Instead: download the
+checkpoint by hand from Hugging Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and drop it in
+your ComfyUI models/checkpoints folder, exactly the same way as any other checkpoint --
+MorphGS: Preprocess Video's sv4d_mode dropdown reads from that folder directly.
 """
 import os
 import shutil
@@ -165,6 +174,28 @@ def ensure_cuda_extensions():
         pip_install("-e", ext_dir, "--no-build-isolation")
 
 
+GENERATIVE_MODELS_DIR = os.path.join(MORPHGS_SRC, "src", "extlibs", "generative-models")
+
+
+def ensure_generative_models():
+    """MorphGS: Preprocess Video needs Stability AI's `generative-models` (SGM) code importable
+    to run SV4D/SP4D -- a checkpoint file alone isn't enough, and there's no ComfyUI-native
+    architecture for it to load through instead (see this file's module docstring). Installed
+    once here, automatically, same as every other dependency -- not a separate manual step."""
+    if os.path.isdir(os.path.join(GENERATIVE_MODELS_DIR, ".git")):
+        log(f"{GENERATIVE_MODELS_DIR} already exists, skipping clone.")
+        return
+    run(["git", "clone", "--branch", "sp4d", "--depth", "1",
+         "https://github.com/Stability-AI/generative-models.git", GENERATIVE_MODELS_DIR])
+    pip_install("-r", os.path.join(GENERATIVE_MODELS_DIR, "requirements", "pt2.txt"))
+    pip_install("-e", GENERATIVE_MODELS_DIR)
+    pip_install("-e", "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata")
+    # generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
+    # torch.from_numpy/pytorch3d (already encountered once during this project) -- re-pin
+    # immediately, verify() below re-checks this actually held.
+    pip_install("numpy<2")
+
+
 def verify():
     import torch
     import gsplat
@@ -192,8 +223,13 @@ def main():
     ensure_morphgs_requirements()
     ensure_gsplat()
     ensure_cuda_extensions()
+    ensure_generative_models()
     verify()
-    log("Done. Run the 'MorphGS: Setup SV4D' node next to fetch the SV4D checkpoint.")
+    log(
+        "Done. To use MorphGS: Preprocess Video, download an SV4D/SP4D checkpoint from Hugging "
+        "Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and place it in your ComfyUI "
+        "models/checkpoints folder, the same way as any other checkpoint."
+    )
 
 
 if __name__ == "__main__":

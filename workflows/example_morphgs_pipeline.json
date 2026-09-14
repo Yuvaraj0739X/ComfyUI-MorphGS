@@ -3,32 +3,13 @@
   "last_link_id": 4,
   "nodes": [
     {
-      "id": 1,
-      "type": "MorphGSSetupSV4D",
-      "title": "MorphGS: Setup SV4D (run once)",
-      "pos": [80, 80],
-      "size": [340, 100],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {"name": "sv4d_mode", "type": "COMBO", "widget": {"name": "sv4d_mode"}, "link": null},
-        {"name": "force_reinstall", "type": "BOOLEAN", "widget": {"name": "force_reinstall"}, "link": null}
-      ],
-      "outputs": [
-        {"name": "log", "type": "STRING", "links": []}
-      ],
-      "properties": {"Node name for S&R": "MorphGSSetupSV4D"},
-      "widgets_values": ["sv4d", false]
-    },
-    {
       "id": 2,
       "type": "MorphGSPreprocessCharacter",
       "title": "MorphGS: Preprocess Character",
       "pos": [80, 240],
       "size": [340, 170],
       "flags": {},
-      "order": 1,
+      "order": 0,
       "mode": 0,
       "inputs": [
         {"name": "character_source_path", "type": "STRING", "widget": {"name": "character_source_path"}, "link": null},
@@ -50,7 +31,7 @@
       "pos": [80, 460],
       "size": [340, 200],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [
         {"name": "video_path", "type": "STRING", "widget": {"name": "video_path"}, "link": null},
@@ -74,7 +55,7 @@
       "pos": [500, 300],
       "size": [340, 200],
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [
         {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 2},
@@ -97,7 +78,7 @@
       "pos": [900, 300],
       "size": [340, 170],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [
         {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 4},

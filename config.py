@@ -2,15 +2,15 @@
 Configuration for ComfyUI-MorphGS.
 
 MorphGS's own dependencies (pinned torch/CUDA build, compiled CUDA extensions) are installed
-directly into ComfyUI's own Python environment by install.py, and MorphGS's source is cloned
-into this package's own directory alongside it -- there is no separate environment to point at,
-so unlike earlier versions of this package there's no backend/conda/WSL selection here.
+directly into ComfyUI's own Python environment by install.py, and MorphGS's source ships
+bundled in this package's own morphgs_src/ directory -- there is no separate environment to
+point at, so unlike earlier versions of this package there's no backend/conda/WSL selection here.
 
 Environment variables (all optional, sensible defaults below):
-    MORPHGS_HOME         path to the cloned MorphGS repo root
-                          default: <this package's directory>/morphgs_src, i.e. wherever
-                          install.py cloned it -- override only for an advanced/manual setup
-                          pointing at a MorphGS checkout that lives somewhere else.
+    MORPHGS_HOME         path to the MorphGS source root
+                          default: <this package's directory>/morphgs_src -- override only for
+                          an advanced/manual setup pointing at a MorphGS checkout that lives
+                          somewhere else.
     MORPHGS_BLENDER_BIN  path to (or bare name of) the Blender executable
                           default: "blender" (expects it on PATH, same requirement as
                           ComfyUI-SkinTokens's headless Blender server, so one Blender

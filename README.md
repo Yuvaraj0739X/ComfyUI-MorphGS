@@ -7,8 +7,10 @@ feature extraction, SV4D/SP4D source multi-view preprocessing, and gsplat-based 
 
 ## Why this exists
 
-This installs MorphGS directly into **this same ComfyUI environment** — install the node,
-run `install.py`, download the checkpoint, and go, the same as any other ComfyUI custom node.
+This installs MorphGS directly into **this same ComfyUI environment** — install the node
+from the Manager (which runs `install.py` for you automatically, same as any other custom
+node with install-time dependencies), download the SV4D/SP4D checkpoint from Hugging Face and
+drop it in your `models/checkpoints` folder like any other checkpoint, and go.
 
 That's a real tradeoff worth understanding before you install it, not a detail to skip:
 MorphGS is pinned to `torch==2.0.1+cu118` and needs two compiled CUDA extensions plus
@@ -23,10 +25,19 @@ not a general-purpose install with lots of other custom nodes.
 | Node | Does |
 |---|---|
 | **MorphGS: Preprocess Character** | Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
-| **MorphGS: Preprocess Video** | Segments a raw video onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` is a real dropdown of SV4D/SP4D checkpoints found in the `morphgs_sv4d_checkpoints` folder (registered by this package) — not a fixed list — reflecting whatever `MorphGS: Setup SV4D` has actually downloaded. |
+| **MorphGS: Preprocess Video** | Segments a raw video onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` is a real dropdown of SV4D/SP4D checkpoints found in your ComfyUI `models/checkpoints` folder (and MorphGS's own `generative-models/checkpoints`, registered by this package) — not a fixed list — reflecting whatever checkpoint file you've actually downloaded and placed there. |
 | **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. |
 | **MorphGS: Export Animated Mesh** | Turns a trained experiment into a real, standalone animated 3D asset (`.glb`/`.fbx`) instead of only a rendered video. Replays the trained `AnimationField` checkpoint frame-by-frame to get absolute per-joint transforms, then bakes them onto a skinned mesh in headless Blender: onto the character's *original* rigged file when one is available (which also carries over that file's own materials/textures automatically), or -- for characters with no such file on disk (e.g. MorphGS's own bundled demo characters) -- onto a fresh armature built directly from `mesh.obj` + the RigNet-format rig file's own joint positions and per-vertex skin weights, first re-resolving those weights (`resolve_skinning_weights.py`) exactly as MorphGS's own `Rig` class would for that character's config (some characters' configs apply heat-diffusion smoothing to the raw rig-file weights before training), and reading UVs plus a `.mtl`-referenced texture image if present (or, for characters with no UV/material data at all -- like MorphGS's own bundled `spot` -- per-vertex colors, if `mesh.obj` uses trimesh's "v x y z r g b" extension) so the exported mesh keeps its appearance too. Both `.glb` (self-contained, textures embedded) and `.fbx` (textures embedded via `embed_textures`) carry textures through when the source has them. Shows the result directly in ComfyUI's own native interactive 3D viewer (the same widget its built-in **Save 3D Model** node uses) as soon as it finishes — no separate Preview 3D node needed. |
-| **MorphGS: Setup SV4D** | One-time setup for the SV4D/SP4D dependency used by Preprocess Video: clones Stability AI's `generative-models` repo, installs its dependencies into this same environment, and downloads the checkpoint for the mode you pick straight into MorphGS's own checkpoints folder — SV4D has no native ComfyUI model architecture to run through the built-in Load Checkpoint node directly (unlike SV3D/SVD, which ComfyUI does support natively), so this is as close to "install and run" as it can get for this specific model. Not needed for the DINOv2 features Preprocess Character uses (those download automatically via `torch.hub`), and not needed for SkinTokens (that's handled by ComfyUI-SkinTokens's own node). No login or token is required for either the repo clone or the checkpoint download. |
+
+There is deliberately no "Setup SV4D" node. `install.py` (run automatically by the Manager)
+already clones and installs Stability AI's `generative-models` (the SV4D/SP4D code) into this
+environment; the only thing left to you is downloading the checkpoint file itself from Hugging
+Face and placing it in `models/checkpoints`, same as any other checkpoint you use in ComfyUI —
+SV4D has no native ComfyUI model architecture to run through the built-in Load Checkpoint node
+directly (unlike SV3D/SVD, which ComfyUI does support natively), so there's no such node to
+offer here either way. Not needed at all for the DINOv2 features Preprocess Character uses
+(those download automatically via `torch.hub`), or for SkinTokens (handled by
+ComfyUI-SkinTokens's own node).
 
 Each node caches its own outputs and skips re-running a stage that's already done (unless
 `force_reprocess`/`force_retrain` is set), so you can safely re-run an upstream node without
@@ -38,10 +49,10 @@ consuming its result, and queuing it alone silently does nothing.
 ## Installation
 
 1. Install this node the normal way — via ComfyUI Manager, or `git clone
-   https://github.com/Yuvaraj0739X/ComfyUI-MorphGS` into `custom_nodes/`.
-2. Run `python install.py` from this package's directory (Manager runs this for you
-   automatically). This is the real setup step, and it's substantial — not a quick pip
-   install:
+   https://github.com/Yuvaraj0739X/ComfyUI-MorphGS` into `custom_nodes/`. The Manager runs
+   `install.py` for you automatically right after (same as it does `requirements.txt` for any
+   other custom node with install-time dependencies) — there's no separate command to run
+   yourself. It's a substantial step, not a quick pip install:
    - Checks for the CUDA 11.8 toolkit (`nvcc`) and fails with a clear message if it's missing
      (needed to compile `pytorch3d` and MorphGS's own CUDA extensions from source).
    - Installs `torch==2.0.1+cu118`/`torchvision==0.15.2+cu118` **only if your existing torch
@@ -55,14 +66,20 @@ consuming its result, and queuing it alone silently does nothing.
      right in this repo's `morphgs_src/` directory (a customized copy with fixes: DINOv2-only
      feature matching, `gsplat`-based rendering, topology-aware ARAP regularization) — no
      separate clone or repo to keep in sync.
+   - Clones and installs Stability AI's `generative-models` (the SV4D/SP4D code) so
+     **MorphGS: Preprocess Video** is ready with no separate setup node of its own.
    - Verifies torch/gsplat/pytorch3d all import correctly before finishing.
-3. `blender` (4.2+) needs to be on `PATH` separately — it's **not** a MorphGS dependency (only
+2. `blender` (4.2+) needs to be on `PATH` separately — it's **not** a MorphGS dependency (only
    this package's own mesh/rig conversion and export scripts use it), so `install.py` doesn't
    install it. Same requirement as
    [ComfyUI-SkinTokens](https://github.com/Aero-Ex/ComfyUI-SkinTokens)'s headless Blender
    server, so one install serves both node packs. Point `MORPHGS_BLENDER_BIN` at it if it's
    not on `PATH`.
-4. Run **MorphGS: Setup SV4D** once if you'll use the video-preprocessing node (see below).
+3. If you'll use **MorphGS: Preprocess Video**, download an SV4D/SP4D checkpoint from Hugging
+   Face and place it in your ComfyUI `models/checkpoints` folder, exactly the same way as any
+   other checkpoint (no separate node downloads this for you):
+   - `sv4d` / `sv4d2_8views` mode → [stabilityai/sv4d2.0](https://huggingface.co/stabilityai/sv4d2.0)
+   - `sp4d` mode → [stabilityai/sp4d](https://huggingface.co/stabilityai/sp4d)
 
 ### Configuration
 
@@ -75,21 +92,18 @@ Only two environment variables, both optional:
 
 ### Checkpoint folder discoverability
 
-On load, this package registers two ComfyUI model-folder categories pointing at MorphGS's own
-checkpoint locations, so they show up in ComfyUI's own model folder listings the same way any
-other checkpoint does, and so **MorphGS: Preprocess Video**'s `sv4d_mode` dropdown reflects
-what's actually there:
+On load, this package registers two ComfyUI model-folder categories, so **MorphGS: Preprocess
+Video**'s `sv4d_mode` dropdown reflects whatever checkpoint file you've actually placed:
 
 | Category | Points at |
 |---|---|
-| `morphgs_sv4d_checkpoints` | `$MORPHGS_HOME/src/extlibs/generative-models/checkpoints` |
+| `morphgs_sv4d_checkpoints` | Your ComfyUI `models/checkpoints` folder(s) **and** `$MORPHGS_HOME/src/extlibs/generative-models/checkpoints` |
 | `morphgs_deform_checkpoints` | `$MORPHGS_HOME/output` (every trained experiment's checkpoints) |
 
 ## Typical workflow
 
-0. **MorphGS: Setup SV4D** (one-time, only if you'll use Preprocess Video) — pick your
-   `sv4d_mode`, run once. This clones ~1GB of code and downloads a ~12GB checkpoint, so
-   expect it to take a while the first time; it's cached and skipped on subsequent runs.
+0. Download an SV4D/SP4D checkpoint from Hugging Face into `models/checkpoints` (one-time,
+   only if you'll use Preprocess Video — see Installation above).
 1. **MorphGS: Preprocess Character** — point `character_source_path` at your rigged mesh
    (`.fbx`/`.glb`), give it a `character_name`.
 2. **MorphGS: Preprocess Video** — point `video_path` at your source clip, give it a

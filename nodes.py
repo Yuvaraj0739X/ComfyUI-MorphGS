@@ -1,8 +1,6 @@
 import glob
 import os
 import shutil
-import subprocess
-import sys
 
 # folder_paths/torch/numpy/cv2/pytorch3d/gsplat are deliberately NOT imported at module scope:
 # folder_paths only exists inside a running ComfyUI process, and the rest are installed by
@@ -46,7 +44,8 @@ class MorphGSPreprocessCharacter:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
     # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
-    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
+    # entirely and queuing it alone would do nothing (confirmed via a real API test on an
+    # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     def run(self, character_source_path, character_name, target_height, force_reprocess):
         log = []
@@ -133,12 +132,19 @@ class MorphGSPreprocessVideo:
     Prepares a source video for MorphGS: segments + composites onto a white square
     background if needed, then runs SV4D/SP4D multi-view synthesis + feature extraction.
 
-    sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found in the
-    morphgs_sv4d_checkpoints folder (registered by this package at load time, via
-    folder_paths.get_filename_list) -- not a fixed list of names -- reflecting whatever
-    MorphGS: Setup SV4D has actually downloaded. Falls back to a plain list of mode names when
-    that folder can't be listed (e.g. the Comfy Registry's isolated node scanner, which has no
-    `folder_paths` module at all).
+    sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found under the
+    morphgs_sv4d_checkpoints category (registered by this package at load time, via
+    folder_paths.get_filename_list) -- not a fixed list of names. That category is backed by
+    BOTH this ComfyUI install's own models/checkpoints folder(s) and MorphGS's own
+    generative-models checkout, so a checkpoint downloaded by hand from Hugging Face and
+    dropped into models/checkpoints -- the same way any other ComfyUI checkpoint is installed
+    -- shows up here with no extra step. There is no node that downloads it for you: download
+    the file yourself from
+      - sv4d / sv4d2_8views: https://huggingface.co/stabilityai/sv4d2.0
+      - sp4d: https://huggingface.co/stabilityai/sp4d
+    and place it in your ComfyUI models/checkpoints folder. Falls back to a plain list of mode
+    names when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner,
+    which has no `folder_paths` module at all).
     """
 
     @classmethod
@@ -174,18 +180,22 @@ class MorphGSPreprocessVideo:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
     # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
-    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
+    # entirely and queuing it alone would do nothing (confirmed via a real API test on an
+    # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, force_reprocess):
         log = []
         mode, filename = _resolve_sv4d_selection(sv4d_mode)
-        gm_dir = os.path.join(config.MORPHGS_HOME, "src", "extlibs", "generative-models")
-        ckpt_path = os.path.join(gm_dir, "checkpoints", filename)
 
-        if not os.path.isfile(ckpt_path):
+        import folder_paths
+
+        ckpt_path = folder_paths.get_full_path("morphgs_sv4d_checkpoints", filename)
+        if not ckpt_path:
+            hf_repo, _ = _SV4D_CHECKPOINTS[mode]
             raise RuntimeError(
-                f"SV4D checkpoint '{filename}' not found at {ckpt_path}. Run MorphGS: Setup "
-                f"SV4D first."
+                f"SV4D checkpoint '{filename}' not found. Download it from "
+                f"https://huggingface.co/{hf_repo} and place it in your ComfyUI "
+                f"models/checkpoints folder, the same way as any other checkpoint."
             )
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
@@ -244,7 +254,8 @@ class MorphGSTrainAndRender:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
     # wired to anything downstream -- otherwise ComfyUI's execution graph would prune it out
-    # entirely and queuing it alone would do nothing, confirmed on MorphGS: Setup SV4D.
+    # entirely and queuing it alone would do nothing (confirmed via a real API test on an
+    # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     def run(self, scene_name, character_name, iterations, force_retrain):
         log = []
@@ -515,134 +526,11 @@ class MorphGSExportAnimatedMesh:
         return {"ui": ui, "result": (local_mesh_path, "\n".join(log))}
 
 
-class MorphGSSetupSV4D:
-    """
-    One-time setup for the SV4D/SP4D multi-view synthesis step used by MorphGS: Preprocess
-    Video. Not needed for DINOv2 target-character features (those download automatically via
-    torch.hub on first use) or for SkinTokens (handled by ComfyUI-SkinTokens's own node).
-
-    Clones Stability AI's generative-models repo (sp4d branch, which carries both the SP4D
-    and SV4D2.0 code paths), installs its Python dependencies directly into this same
-    environment, and downloads the checkpoint for the requested mode straight into MorphGS's
-    own checkpoints folder -- SV4D has no native ComfyUI model architecture to load it through
-    the built-in Load Checkpoint node directly (unlike SV3D/SVD, which ComfyUI's own
-    comfy/supported_models.py does support natively), so this is as close to "install and run"
-    as it can get for this specific model. That folder is registered as the
-    morphgs_sv4d_checkpoints category at package load, so it's visible the same way any other
-    checkpoint folder is, and so MorphGS: Preprocess Video's dropdown reflects what's actually
-    there. All downloads are anonymous HTTPS -- neither the repo clone nor the Hugging Face
-    checkpoints require any login or token.
-
-    generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
-    torch.from_numpy/pytorch3d (already encountered once during this project) -- this node
-    re-pins numpy<2 immediately after installing SV4D's requirements and verifies both
-    torch.from_numpy and pytorch3d still import cleanly, in a FRESH interpreter (not this
-    already-running ComfyUI process, which may already have numpy/torch loaded and wouldn't
-    reflect an on-disk package change until restarted), before reporting success.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sv4d_mode": (["sv4d", "sp4d", "sv4d2_8views"], {"default": "sv4d"}),
-                "force_reinstall": ("BOOLEAN", {"default": False}),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("log",)
-    FUNCTION = "run"
-    CATEGORY = CATEGORY
-    OUTPUT_NODE = True  # Meant to be run standalone, with nothing consuming its "log" output --
-    # without this, ComfyUI's execution graph would prune it out entirely and it would never
-    # actually run when queued (confirmed: submitting it alone raised "Prompt has no outputs").
-
-    def run(self, sv4d_mode, force_reinstall):
-        log = []
-        gm_dir = os.path.join(config.MORPHGS_HOME, "src", "extlibs", "generative-models")
-
-        if force_reinstall or not os.path.isdir(os.path.join(gm_dir, ".git")):
-            if os.path.isdir(gm_dir):
-                shutil.rmtree(gm_dir)
-            clone_proc = subprocess.run(
-                ["git", "clone", "--branch", "sp4d", "--depth", "1",
-                 "https://github.com/Stability-AI/generative-models.git", gm_dir],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=600,
-            )
-            clone_out = clone_proc.stdout + clone_proc.stderr
-            log.append(clone_out)
-            if clone_proc.returncode != 0:
-                raise RuntimeError(f"git clone of generative-models failed:\n{clone_out}")
-
-            install_cmds = [
-                [sys.executable, "-m", "pip", "install", "-r", os.path.join(gm_dir, "requirements", "pt2.txt")],
-                [sys.executable, "-m", "pip", "install", "-e", gm_dir],
-                [sys.executable, "-m", "pip", "install", "-e",
-                 "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata"],
-            ]
-            for cmd in install_cmds:
-                proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=1800)
-                out = proc.stdout + proc.stderr
-                log.append(out)
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Command failed: {' '.join(cmd)}\n\n--- output ---\n{out}")
-
-            repin_proc = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "numpy<2"],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=300,
-            )
-            log.append(repin_proc.stdout + repin_proc.stderr)
-
-            verify_script = (
-                "import torch, numpy as np, pytorch3d\n"
-                "from pytorch3d.renderer import look_at_view_transform\n"
-                "assert torch.from_numpy(np.zeros(3)) is not None\n"
-                "print('NUMPY_FIX_VERIFIED')\n"
-            )
-            verify_proc = subprocess.run(
-                [sys.executable, "-c", verify_script],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=120,
-            )
-            verify_out = verify_proc.stdout + verify_proc.stderr
-            log.append(verify_out)
-            if "NUMPY_FIX_VERIFIED" not in verify_out:
-                raise RuntimeError(
-                    "SV4D dependency install completed but the post-install numpy/torch/pytorch3d "
-                    "verification did not pass -- environment may be left in a broken state. "
-                    f"Full log:\n" + "\n".join(log)
-                )
-            log.append(
-                "Note: if ComfyUI's own process had already imported numpy/torch before this "
-                "node ran, restart ComfyUI so its own process picks up the packages just installed."
-            )
-        else:
-            log.append(f"{gm_dir} already exists, skipping clone/install (force_reinstall=False)")
-
-        hf_repo, filename = _SV4D_CHECKPOINTS[sv4d_mode]
-        ckpt_dir = os.path.join(gm_dir, "checkpoints")
-        ckpt_path = os.path.join(ckpt_dir, filename)
-
-        if force_reinstall or not os.path.isfile(ckpt_path):
-            os.makedirs(ckpt_dir, exist_ok=True)
-            url = f"https://huggingface.co/{hf_repo}/resolve/main/{filename}"
-            log.append(f"Downloading {url} -> {ckpt_path}")
-            import urllib.request
-
-            urllib.request.urlretrieve(url, ckpt_path)
-            log.append(f"Downloaded {ckpt_path}")
-        else:
-            log.append(f"{ckpt_path} already exists, skipping download")
-
-        return ("\n".join(log),)
-
-
 NODE_CLASS_MAPPINGS = {
     "MorphGSPreprocessCharacter": MorphGSPreprocessCharacter,
     "MorphGSPreprocessVideo": MorphGSPreprocessVideo,
     "MorphGSTrainAndRender": MorphGSTrainAndRender,
     "MorphGSExportAnimatedMesh": MorphGSExportAnimatedMesh,
-    "MorphGSSetupSV4D": MorphGSSetupSV4D,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -650,5 +538,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MorphGSPreprocessVideo": "MorphGS: Preprocess Video",
     "MorphGSTrainAndRender": "MorphGS: Train & Render",
     "MorphGSExportAnimatedMesh": "MorphGS: Export Animated Mesh",
-    "MorphGSSetupSV4D": "MorphGS: Setup SV4D",
 }
