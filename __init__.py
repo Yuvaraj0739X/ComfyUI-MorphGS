@@ -7,17 +7,14 @@ def _register_model_folders():
     """
     Register MorphGS's own checkpoint directories -- the SV4D checkpoint MorphGS: Setup SV4D
     downloads, and the per-experiment trained deform-network checkpoints MorphGS: Train &
-    Render produces -- as proper ComfyUI model folders, purely for discoverability: so they
-    show up in ComfyUI's own model folder listings, and so extra_model_paths.yaml can point at
-    them the standard way on setups where MorphGS lives on a different drive.
+    Render produces -- as proper ComfyUI model folders. This is now the single, authoritative
+    location for these files (MorphGS's source ships bundled in this same package, so there's
+    no separate pipeline environment to bridge to), and it's what MorphGS: Preprocess Video's
+    sv4d_mode dropdown reads from.
 
-    This does NOT change how any node actually loads these files (they're still read from
-    inside the MorphGS environment via the existing subprocess-based pipeline, since that
-    environment can be a different machine entirely in a real deployment) -- registration is
-    skipped silently whenever the resolved path isn't reachable from wherever this ComfyUI
-    process itself runs (e.g. a genuinely remote MorphGS deployment with no local mount, or
-    the Comfy Registry's isolated node scanner, which has no `folder_paths` module at all),
-    since both are normal, expected situations here, not errors.
+    Skipped silently if folder_paths isn't importable (the Comfy Registry's isolated node
+    scanner, which has no such module) or if MORPHGS_HOME doesn't exist yet (install.py hasn't
+    run yet) -- both normal situations, not errors.
     """
     try:
         import os
@@ -25,23 +22,21 @@ def _register_model_folders():
         import folder_paths
 
         from . import config
-        from .process_utils import to_local_path
 
         categories = {
             "morphgs_sv4d_checkpoints": (
-                f"{config.MORPHGS_HOME}/src/extlibs/generative-models/checkpoints",
+                os.path.join(config.MORPHGS_HOME, "src", "extlibs", "generative-models", "checkpoints"),
                 {".safetensors", ".ckpt"},
             ),
             "morphgs_deform_checkpoints": (
-                f"{config.MORPHGS_HOME}/output",
+                os.path.join(config.MORPHGS_HOME, "output"),
                 {".pth"},
             ),
         }
-        for category, (pipeline_path, extensions) in categories.items():
-            local_path = to_local_path(pipeline_path)
-            if os.path.isdir(local_path):
-                folder_paths.add_model_folder_path(category, local_path)
-                folder_paths.folder_names_and_paths[category] = ([local_path], extensions)
+        for category, (path, extensions) in categories.items():
+            if os.path.isdir(path):
+                folder_paths.add_model_folder_path(category, path)
+                folder_paths.folder_names_and_paths[category] = ([path], extensions)
     except Exception:
         pass  # Discoverability-only; never let this break node-pack loading.
 

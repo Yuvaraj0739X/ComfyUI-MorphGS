@@ -1,0 +1,52 @@
+# Ignore everything by default. Release sources are explicitly unignored below.
+/*
+
+# Root release files.
+!/.gitignore
+!/README.md
+!/LICENSE.md
+!/THIRD_PARTY_NOTICES.md
+!/requirements.txt
+
+# Release directories.
+!/configs/
+!/configs/**
+!/assets/
+!/assets/**
+!/src/
+!/src/**
+
+# Local assistants, editors, caches, data, and experiment outputs.
+/.agents/
+/.claude/
+/.codex/
+/.vscode/
+/.ruff_cache/
+/demo/
+/demo_data/
+/output/
+/output_temporal/
+/scripts/
+
+# Python/build artifacts, including anything under unignored source dirs.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.so
+
+# Large optional external checkouts/checkpoints under src.
+/src/extlibs/GeoAware
+/src/extlibs/GeoAware/
+/src/extlibs/GeoAware/**
+/src/extlibs/generative-models
+/src/extlibs/generative-models/
+/src/extlibs/generative-models/**
+checkpoints/
+**/checkpoints/
+
+# Local backup copies made while patching source files during development.
+*.orig
+*_orig

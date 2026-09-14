@@ -209,4 +209,19 @@ with open(rig_out_path, 'w') as f:
         f.write(line + "\n")
 
 print(f"Exported: {rig_out_path}")
+
+# --- Persist conversion metadata for the animation-bake step (MorphGS: Export Animated Mesh),
+# which needs to apply the exact same scale correction and axis remap to the ORIGINAL rigged
+# file so its bone rest positions line up with what training actually saw in mesh_ori_rig.txt.
+import json
+meta_path = os.path.join(out_dir, "rigging", "conversion_meta.json")
+with open(meta_path, "w") as f:
+    json.dump({
+        "source_file": os.path.basename(input_path),
+        "scale_fix": scale_fix,
+        "target_height": target_height,
+        "obj_export_axis_remap": "blender(x,y,z) -> obj(x, z, -y)",
+    }, f, indent=2)
+print(f"Exported: {meta_path}")
+
 print("=== DONE ===")

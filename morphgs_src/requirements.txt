@@ -1,0 +1,25 @@
+# torch / torchvision / pytorch3d are installed separately (see README)
+numpy
+scipy
+pytorch-msssim
+scikit-image
+scikit-learn
+scikit-sparse
+Pillow
+opencv-python
+trimesh
+open3d
+plyfile
+pymeshlab
+imageio
+imageio-ffmpeg
+matplotlib
+tqdm
+pyyaml
+pykeops
+fpsample
+jaxtyping
+typeguard
+pyrender
+einops
+omegaconf

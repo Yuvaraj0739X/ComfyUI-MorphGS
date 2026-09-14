@@ -1,0 +1,9 @@
+model:
+  smooth_w: 30
+  calculate_skinning_w: false
+  skinning_apply_softmax: true
+  opt:
+    chamfer_2d_reg: 0.005
+    global_t_lr: 0.01
+    motion_lr: 0.001
+    joint_rot_lr: 0.003

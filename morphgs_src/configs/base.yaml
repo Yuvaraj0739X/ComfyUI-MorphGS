@@ -1,0 +1,120 @@
+model:
+  downsample: "original"
+  feature_dim: 16
+  name: "morphgs"
+
+  opt:
+    rasterizer_backend: "latent"  # "latent" | "gauhuman"
+    iterations: 5_000
+    num_views: 5
+    single_view_cam_index: 0
+    use_multiview: true
+    multiview_loss_weight: 0.25
+
+    skinning_method: "dqs"  # "lbs" | "dqs"
+
+    bone_length_start_iter: 0
+    use_bone_adapt_lr_schedule: false
+
+    vid_window_size: 10
+    fps_num: 1024
+
+    # Main losses
+    weight_render_loss: 1.0
+    weight_mask_loss: 0.33
+    mask_loss_start_iter: 1500
+    weight_keyp_loss: 0.006
+    keyp_multiview_end_iter: -1  # -1: always apply multiview keypoint loss
+
+    # Motion regularizers
+    weight_transformation_reg: 0.005
+    weight_smooth_reg: 0.01
+    weight_twist_reg: 1.0
+    chamfer_2d_reg: 0.001
+    arap_nn_num: 20
+    weight_arap: 1.0
+
+    # Staged optimization: global alignment first, then joint rotations/shape
+    joint_rot_start_iterations: 500
+    shape_start_iterations: 500
+
+    # Dense 2D-3D keypoint supervision
+    dense_keyp_num: 1000
+    keyp_threshold: 0.85
+    keyp_weight_decay_start_iter: 10000
+    keyp_weight_decay_end_iter: 10000
+    keyp_weight_decay_final_ratio: 1.0
+
+    # Gaussian optimization
+    position_lr_init: 0.00016
+    position_lr_final: 0.000016
+    position_lr_delay_mult: 0.01
+    position_lr_max_steps: 15_000
+    feature_lr: 0.01
+    distill_lr: 0.0
+    opacity_lr: 0.05
+    scaling_lr: 0.005
+    rotation_lr: 0.001
+    percent_dense: 0.01
+    lambda_dssim: 0.4
+    densification_interval: 100
+    oneup_sh_degree_step: 1000
+    opacity_reset_interval: 3_000
+    enable_opacity_reset: false
+    densify_from_iter: 20_000  # > densify_until_iter disables densify & prune
+    densify_until_iter: 10_000
+    densify_grad_threshold: 0.0002
+    update_features_until_iter: 0
+
+    # Per-parameter start iterations (staged unfreezing)
+    xyz_start_iteration: 1500
+    features_dc_start_iteration: 500
+    features_rest_start_iteration: 1000
+    opacity_start_iteration: 20_000  # frozen
+    scaling_start_iteration: 1500
+    rotation_start_iteration: 1500
+    distill_features_start_iteration: 20_000  # frozen
+    skinning_weights_start_iteration: 20_000  # frozen
+
+    # Motion learning rates
+    motion_lr: 0.005
+    global_t_lr: 0.01
+    joint_rot_lr: 0.005
+    # Morphology learning rates
+    shape_scale_lr: 0.01
+    shape_bl_lr: 0.001
+
+    update_ts_until_iter: 1000  # global scale updated until this iteration
+    update_bl_decay_iter: 1500  # bone-length lr decays until this iteration
+    update_bl_decay_step: 500
+
+    # Parameter freeze flags (true = frozen, lr set to 0)
+    freeze_opacity: true
+    freeze_xyz: false
+    freeze_scaling: false
+    freeze_rotation: false
+    freeze_features_dc: false
+    freeze_features_rest: false
+    freeze_distill_features: true
+
+    shape_sw_lr: 0.0
+
+  smooth_w: 10
+  calculate_skinning_w: false
+  skinning_apply_softmax: false
+
+project:
+  name: ""
+  source: ""
+  target: ""
+  seed: 43
+
+render:
+  speed: 2.0
+  scale_factor: 1.0
+  zoom: 1.0
+  center_mesh: false
+  render_translation: [0.0, 0.0, 0.0]
+  source_preview_mode: "fit"
+  target_preview_scale: 1.0
+  target_preview_center: [0.5, 0.5]
