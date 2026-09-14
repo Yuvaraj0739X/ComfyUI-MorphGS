@@ -37,8 +37,9 @@ deliberately no node that downloads the actual SV4D/SP4D checkpoint file for you
 native ComfyUI model architecture (unlike SV3D/SVD, which ComfyUI does support natively), so it
 couldn't be loaded through the built-in Load Checkpoint node either way. Instead: download the
 checkpoint by hand from Hugging Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and drop it in
-your ComfyUI models/checkpoints folder, exactly the same way as any other checkpoint --
-MorphGS: Preprocess Video's sv4d_mode dropdown reads from that folder directly.
+your ComfyUI models/sv4d folder (created and registered automatically by this package, the
+same convention ComfyUI-SkinTokens/models/skintoken and ComfyUI-HY-Motion1/models/HY-Motion
+already use) -- MorphGS: Preprocess Video's sv4d_mode dropdown reads from that folder directly.
 """
 import os
 import shutil
@@ -228,7 +229,7 @@ def main():
     log(
         "Done. To use MorphGS: Preprocess Video, download an SV4D/SP4D checkpoint from Hugging "
         "Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and place it in your ComfyUI "
-        "models/checkpoints folder, the same way as any other checkpoint."
+        "models/sv4d folder."
     )
 
 

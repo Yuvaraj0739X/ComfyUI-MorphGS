@@ -8,14 +8,15 @@ def _register_model_folders():
     Register the folders MorphGS: Preprocess Video and MorphGS: Train & Render read
     checkpoints from as proper ComfyUI model folders.
 
-    morphgs_sv4d_checkpoints is deliberately backed by BOTH this ComfyUI install's own
-    models/checkpoints folder(s) (folder_paths.get_folder_paths("checkpoints"), which always
-    exists) and MorphGS's own generative-models checkout -- there is no node that downloads the
-    SV4D/SP4D checkpoint for you; the user downloads it by hand from Hugging Face and drops it
-    into models/checkpoints exactly like any other ComfyUI checkpoint, and it shows up in
-    MorphGS: Preprocess Video's sv4d_mode dropdown from there with no extra step. The
-    generative-models path is also included in case someone already has a checkout with a
-    checkpoint staged there from before.
+    sv4d gets its own dedicated ComfyUI models/sv4d folder, auto-created here at load time --
+    the same convention ComfyUI-SkinTokens (models/skintoken, created the same way in that
+    package's own __init__.py) and ComfyUI-HY-Motion1 (models/HY-Motion) already use in this
+    same ComfyUI install, rather than dropping an unrelated safetensors file into the generic,
+    shared models/checkpoints bucket. There is no node that downloads the SV4D/SP4D checkpoint
+    for you; download it by hand from Hugging Face and drop it in models/sv4d, and it shows up
+    in MorphGS: Preprocess Video's sv4d_mode dropdown with no extra step. models/checkpoints and
+    MorphGS's own generative-models checkout are also scanned, so a file kept in either of those
+    instead still works.
 
     morphgs_deform_checkpoints points at MorphGS's own per-experiment output directory, where
     MorphGS: Train & Render writes each trained deform-network checkpoint.
@@ -30,8 +31,12 @@ def _register_model_folders():
 
         from . import config
 
+        sv4d_dir = os.path.join(folder_paths.models_dir, "sv4d")
+        if not os.path.isdir(sv4d_dir):
+            os.makedirs(sv4d_dir)
+
         gm_ckpt_dir = os.path.join(config.MORPHGS_HOME, "src", "extlibs", "generative-models", "checkpoints")
-        sv4d_paths = list(folder_paths.get_folder_paths("checkpoints"))
+        sv4d_paths = [sv4d_dir, *folder_paths.get_folder_paths("checkpoints")]
         if os.path.isdir(gm_ckpt_dir):
             sv4d_paths.append(gm_ckpt_dir)
         folder_paths.folder_names_and_paths["morphgs_sv4d_checkpoints"] = (sv4d_paths, {".safetensors", ".ckpt"})

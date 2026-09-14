@@ -134,17 +134,17 @@ class MorphGSPreprocessVideo:
 
     sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found under the
     morphgs_sv4d_checkpoints category (registered by this package at load time, via
-    folder_paths.get_filename_list) -- not a fixed list of names. That category is backed by
-    BOTH this ComfyUI install's own models/checkpoints folder(s) and MorphGS's own
-    generative-models checkout, so a checkpoint downloaded by hand from Hugging Face and
-    dropped into models/checkpoints -- the same way any other ComfyUI checkpoint is installed
-    -- shows up here with no extra step. There is no node that downloads it for you: download
-    the file yourself from
+    folder_paths.get_filename_list) -- not a fixed list of names. This package creates and
+    registers a dedicated models/sv4d folder for this (the same convention
+    ComfyUI-SkinTokens's models/skintoken and ComfyUI-HY-Motion1's models/HY-Motion use), and
+    also scans models/checkpoints and MorphGS's own generative-models checkout, so a checkpoint
+    kept in any of those three shows up here. There is no node that downloads it for you:
+    download the file yourself from
       - sv4d / sv4d2_8views: https://huggingface.co/stabilityai/sv4d2.0
       - sp4d: https://huggingface.co/stabilityai/sp4d
-    and place it in your ComfyUI models/checkpoints folder. Falls back to a plain list of mode
-    names when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner,
-    which has no `folder_paths` module at all).
+    and place it in your ComfyUI models/sv4d folder. Falls back to a plain list of mode names
+    when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner, which
+    has no `folder_paths` module at all).
     """
 
     @classmethod
@@ -195,7 +195,7 @@ class MorphGSPreprocessVideo:
             raise RuntimeError(
                 f"SV4D checkpoint '{filename}' not found. Download it from "
                 f"https://huggingface.co/{hf_repo} and place it in your ComfyUI "
-                f"models/checkpoints folder, the same way as any other checkpoint."
+                f"models/sv4d folder (models/checkpoints also works)."
             )
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
