@@ -346,8 +346,13 @@ class MorphGSExportAnimatedMesh:
 
     Saves via the same folder_paths.get_save_image_path() convention ComfyUI's own built-in
     SaveGLB node uses, and returns the matching {"ui": {"3d": [...]}} payload -- so this node
-    shows the result directly in ComfyUI's native interactive 3D viewer widget (the same one
-    SaveGLB/Preview3D use) as soon as it finishes, with no separate downstream node needed.
+    shows the result directly in ComfyUI's native interactive 3D viewer widget as soon as it
+    finishes, with no separate downstream node needed. preview_path is ALSO returned as a real
+    socket (the same output-dir-relative "subfolder/filename" string ComfyUI-Hunyuan3DWrapper's
+    own Hy3DExportMesh returns) so this node can additionally be wired into ComfyUI's native
+    "Preview 3D & Animation" (Preview3D) node when you want that separate, explicit node in the
+    graph -- e.g. to view the result at a different point than right after export, or to record
+    a fixed camera angle via Preview3D's optional camera_info input.
     """
 
     @classmethod
@@ -362,8 +367,8 @@ class MorphGSExportAnimatedMesh:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("mesh_path", "log")
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("mesh_path", "preview_path", "log")
     FUNCTION = "run"
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
@@ -522,8 +527,13 @@ class MorphGSExportAnimatedMesh:
         shutil.copy(exported_path, local_mesh_path)
         log.append(f"Copied result to {local_mesh_path}")
 
+        # Same output-dir-relative shape ComfyUI-Hunyuan3DWrapper's Hy3DExportMesh returns
+        # (str(Path(subfolder) / filename)) -- what Preview3D's plain-string input expects,
+        # since it resolves the file via ComfyUI's own /view route, not an OS filesystem path.
+        preview_path = f"{subfolder}/{saved_filename}" if subfolder else saved_filename
+
         ui = {"3d": [{"filename": saved_filename, "subfolder": subfolder, "type": "output"}]}
-        return {"ui": ui, "result": (local_mesh_path, "\n".join(log))}
+        return {"ui": ui, "result": (local_mesh_path, preview_path, "\n".join(log))}
 
 
 NODE_CLASS_MAPPINGS = {
