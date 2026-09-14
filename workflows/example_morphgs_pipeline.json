@@ -1,107 +1,301 @@
 {
-  "last_node_id": 5,
+  "id": "3ac7c499-0a0e-4d50-90b8-3261ab6afd23",
+  "revision": 0,
+  "last_node_id": 6,
   "last_link_id": 4,
   "nodes": [
     {
       "id": 2,
       "type": "MorphGSPreprocessCharacter",
       "title": "MorphGS: Preprocess Character",
-      "pos": [80, 240],
-      "size": [340, 170],
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        400,
+        150
+      ],
       "flags": {},
       "order": 0,
       "mode": 0,
-      "inputs": [
-        {"name": "character_source_path", "type": "STRING", "widget": {"name": "character_source_path"}, "link": null},
-        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": null},
-        {"name": "target_height", "type": "FLOAT", "widget": {"name": "target_height"}, "link": null},
-        {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
-      ],
+      "inputs": [],
       "outputs": [
-        {"name": "character_name", "type": "STRING", "links": [1, 3]},
-        {"name": "log", "type": "STRING", "links": []}
+        {
+          "name": "character_name",
+          "type": "STRING",
+          "links": [
+            1,
+            2
+          ]
+        },
+        {
+          "name": "log",
+          "type": "STRING",
+          "links": []
+        }
       ],
-      "properties": {"Node name for S&R": "MorphGSPreprocessCharacter"},
-      "widgets_values": ["/workspace/inputs/character.fbx", "my_character", 1.6, false]
+      "properties": {
+        "Node name for S&R": "MorphGSPreprocessCharacter"
+      },
+      "widgets_values": [
+        "/workspace/inputs/character.fbx",
+        "my_character",
+        1.6,
+        false
+      ]
     },
     {
       "id": 3,
       "type": "MorphGSPreprocessVideo",
       "title": "MorphGS: Preprocess Video",
-      "pos": [80, 460],
-      "size": [340, 200],
+      "pos": [
+        40,
+        540
+      ],
+      "size": [
+        400,
+        180
+      ],
       "flags": {},
       "order": 1,
       "mode": 0,
-      "inputs": [
-        {"name": "video_path", "type": "STRING", "widget": {"name": "video_path"}, "link": null},
-        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": null},
-        {"name": "already_masked", "type": "BOOLEAN", "widget": {"name": "already_masked"}, "link": null},
-        {"name": "sv4d_mode", "type": "COMBO", "widget": {"name": "sv4d_mode"}, "link": null},
-        {"name": "fastmode", "type": "BOOLEAN", "widget": {"name": "fastmode"}, "link": null},
-        {"name": "force_reprocess", "type": "BOOLEAN", "widget": {"name": "force_reprocess"}, "link": null}
-      ],
+      "inputs": [],
       "outputs": [
-        {"name": "scene_name", "type": "STRING", "links": [2, 4]},
-        {"name": "log", "type": "STRING", "links": []}
+        {
+          "name": "scene_name",
+          "type": "STRING",
+          "links": [
+            3,
+            4
+          ]
+        },
+        {
+          "name": "log",
+          "type": "STRING",
+          "links": []
+        }
       ],
-      "properties": {"Node name for S&R": "MorphGSPreprocessVideo"},
-      "widgets_values": ["/workspace/inputs/video.mp4", "my_scene", false, "sv4d", true, false]
+      "properties": {
+        "Node name for S&R": "MorphGSPreprocessVideo"
+      },
+      "widgets_values": [
+        "/workspace/inputs/video.mp4",
+        "my_scene",
+        false,
+        "sv4d",
+        true,
+        false
+      ]
     },
     {
       "id": 4,
       "type": "MorphGSTrainAndRender",
       "title": "MorphGS: Train & Render",
-      "pos": [500, 300],
-      "size": [340, 200],
+      "pos": [
+        520,
+        300
+      ],
+      "size": [
+        360,
+        200
+      ],
       "flags": {},
       "order": 2,
       "mode": 0,
       "inputs": [
-        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 2},
-        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": 1},
-        {"name": "iterations", "type": "INT", "widget": {"name": "iterations"}, "link": null},
-        {"name": "force_retrain", "type": "BOOLEAN", "widget": {"name": "force_retrain"}, "link": null}
+        {
+          "name": "scene_name",
+          "type": "STRING",
+          "link": 3
+        },
+        {
+          "name": "character_name",
+          "type": "STRING",
+          "link": 1
+        }
       ],
       "outputs": [
-        {"name": "video_path", "type": "STRING", "links": []},
-        {"name": "frames", "type": "IMAGE", "links": []},
-        {"name": "log", "type": "STRING", "links": []}
+        {
+          "name": "video_path",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "frames",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "log",
+          "type": "STRING",
+          "links": []
+        }
       ],
-      "properties": {"Node name for S&R": "MorphGSTrainAndRender"},
-      "widgets_values": [5000, false]
+      "properties": {
+        "Node name for S&R": "MorphGSTrainAndRender"
+      },
+      "widgets_values": [
+        5000,
+        false
+      ]
     },
     {
       "id": 5,
       "type": "MorphGSExportAnimatedMesh",
       "title": "MorphGS: Export Animated Mesh",
-      "pos": [900, 300],
-      "size": [340, 170],
+      "pos": [
+        940,
+        300
+      ],
+      "size": [
+        360,
+        170
+      ],
       "flags": {},
       "order": 3,
       "mode": 0,
       "inputs": [
-        {"name": "scene_name", "type": "STRING", "widget": {"name": "scene_name"}, "link": 4},
-        {"name": "character_name", "type": "STRING", "widget": {"name": "character_name"}, "link": 3},
-        {"name": "iterations", "type": "INT", "widget": {"name": "iterations"}, "link": null},
-        {"name": "output_format", "type": "COMBO", "widget": {"name": "output_format"}, "link": null},
-        {"name": "force_reexport", "type": "BOOLEAN", "widget": {"name": "force_reexport"}, "link": null}
+        {
+          "name": "scene_name",
+          "type": "STRING",
+          "link": 4
+        },
+        {
+          "name": "character_name",
+          "type": "STRING",
+          "link": 2
+        }
       ],
       "outputs": [
-        {"name": "mesh_path", "type": "STRING", "links": []},
-        {"name": "log", "type": "STRING", "links": []}
+        {
+          "name": "mesh_path",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "log",
+          "type": "STRING",
+          "links": []
+        }
       ],
-      "properties": {"Node name for S&R": "MorphGSExportAnimatedMesh"},
-      "widgets_values": [5000, "glb", false]
+      "properties": {
+        "Node name for S&R": "MorphGSExportAnimatedMesh"
+      },
+      "widgets_values": [
+        5000,
+        "glb",
+        false
+      ]
+    },
+    {
+      "id": 6,
+      "type": "Note",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        1260,
+        160
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "MorphGS setup (one-time): install this node via Manager (install.py runs automatically), then Blender needs to be on PATH. If you'll use Preprocess Video, download an SV4D/SP4D checkpoint from stabilityai/sv4d2.0 or stabilityai/sp4d on Hugging Face and drop it in your ComfyUI models/sv4d folder (created automatically) -- it'll show up in the sv4d_mode dropdown below.\n\nPipeline order: Preprocess Character + Preprocess Video can run in either order or in parallel, then Train & Render, then (optional) Export Animated Mesh for a downloadable .glb/.fbx instead of just a rendered video."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
     }
   ],
   "links": [
-    {"id": 1, "origin_id": 2, "origin_slot": 0, "target_id": 4, "target_slot": 1, "type": "STRING"},
-    {"id": 2, "origin_id": 3, "origin_slot": 0, "target_id": 4, "target_slot": 0, "type": "STRING"},
-    {"id": 3, "origin_id": 2, "origin_slot": 0, "target_id": 5, "target_slot": 1, "type": "STRING"},
-    {"id": 4, "origin_id": 3, "origin_slot": 0, "target_id": 5, "target_slot": 0, "type": "STRING"}
+    [
+      1,
+      2,
+      0,
+      4,
+      1,
+      "STRING"
+    ],
+    [
+      2,
+      2,
+      0,
+      5,
+      1,
+      "STRING"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "STRING"
+    ],
+    [
+      4,
+      3,
+      0,
+      5,
+      0,
+      "STRING"
+    ]
   ],
-  "groups": [],
-  "version": 0.4,
-  "extra": {}
+  "groups": [
+    {
+      "id": 1,
+      "title": "1. Preprocess",
+      "bounding": [
+        20,
+        260,
+        440,
+        480
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "2. Train",
+      "bounding": [
+        500,
+        260,
+        400,
+        260
+      ],
+      "color": "#a1309b",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "3. Export (optional)",
+      "bounding": [
+        920,
+        260,
+        400,
+        230
+      ],
+      "color": "#88a13a",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "version": 0.4
 }
