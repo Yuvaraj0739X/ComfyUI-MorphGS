@@ -158,6 +158,51 @@ def ensure_torch():
     )
 
 
+def nvidia_pip_cuda_dirs():
+    """When torch's own CUDA support comes from pip-installed `nvidia-*` wheels instead of a
+    full system CUDA toolkit (normal for modern torch/CUDA 12+/13 installs), the actual CUDA
+    headers/libs needed to compile a NEW CUDA extension (pytorch3d, MorphGS's own two
+    extensions) can live inside site-packages instead of /usr/local/cuda -- confirmed in
+    practice: `cusparse.h` existed only at .../site-packages/nvidia/cu13/include/cusparse.h,
+    invisible to a build that only searches /usr/local/cuda/include, causing a "fatal error:
+    cusparse.h: No such file or directory" that has nothing to do with a missing dependency.
+    Collected dynamically (works for both the older per-library nvidia-cusparse-cuXX/
+    nvidia-cublas-cuXX layout and the newer consolidated nvidia-cu13-style layout) rather than
+    hardcoding a path, since the exact venv/CUDA version varies per machine."""
+    try:
+        import nvidia
+    except ImportError:
+        return [], []
+    base = os.path.dirname(nvidia.__file__)
+    include_dirs, lib_dirs = [], []
+    for name in os.listdir(base):
+        subdir = os.path.join(base, name)
+        inc = os.path.join(subdir, "include")
+        lib = os.path.join(subdir, "lib")
+        if os.path.isdir(inc):
+            include_dirs.append(inc)
+        if os.path.isdir(lib):
+            lib_dirs.append(lib)
+    return include_dirs, lib_dirs
+
+
+def _cuda_build_env():
+    """Extra CPATH/LIBRARY_PATH/LD_LIBRARY_PATH so compiling a CUDA extension can find
+    headers/libs bundled inside pip-installed nvidia-* wheels (see nvidia_pip_cuda_dirs).
+    Returns None (== inherit the current environment unchanged) when there's nothing to add."""
+    include_dirs, lib_dirs = nvidia_pip_cuda_dirs()
+    if not include_dirs and not lib_dirs:
+        return None
+    env = os.environ.copy()
+    if include_dirs:
+        env["CPATH"] = os.pathsep.join([*include_dirs, env.get("CPATH", "")]).rstrip(os.pathsep)
+    if lib_dirs:
+        joined = os.pathsep.join([*lib_dirs, env.get("LIBRARY_PATH", "")]).rstrip(os.pathsep)
+        env["LIBRARY_PATH"] = joined
+        env["LD_LIBRARY_PATH"] = os.pathsep.join([*lib_dirs, env.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
+    return env
+
+
 def ensure_pytorch3d():
     try:
         import pytorch3d  # noqa: F401
@@ -171,7 +216,10 @@ def ensure_pytorch3d():
     # a "ModuleNotFoundError: No module named 'torch'" failure even though torch is right
     # there. --no-build-isolation is pytorch3d's own documented install method for exactly
     # this reason (same as MorphGS's own two CUDA extensions below, which already use it).
-    pip_install("git+https://github.com/facebookresearch/pytorch3d.git", "--no-build-isolation")
+    pip_install(
+        "git+https://github.com/facebookresearch/pytorch3d.git", "--no-build-isolation",
+        env=_cuda_build_env(),
+    )
 
 
 def ensure_morphgs_requirements():
@@ -248,6 +296,7 @@ def ensure_morphgs_source():
 
 
 def ensure_cuda_extensions():
+    cuda_env = _cuda_build_env()  # see nvidia_pip_cuda_dirs -- same header/lib gap as pytorch3d
     for name, subdir in [
         ("diff_gaussian_rasterization", "latent-gaussian-rasterization"),
         ("simple_knn", "simple-knn"),
@@ -259,7 +308,7 @@ def ensure_cuda_extensions():
         except ImportError:
             pass
         ext_dir = os.path.join(MORPHGS_SRC, "src", "extlibs", subdir)
-        pip_install("-e", ext_dir, "--no-build-isolation")
+        pip_install("-e", ext_dir, "--no-build-isolation", env=cuda_env)
 
 
 GENERATIVE_MODELS_DIR = os.path.join(MORPHGS_SRC, "src", "extlibs", "generative-models")
