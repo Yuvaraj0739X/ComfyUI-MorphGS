@@ -25,9 +25,9 @@ not a general-purpose install with lots of other custom nodes.
 
 | Node | Does |
 |---|---|
-| **MorphGS: Preprocess Character** | Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
-| **MorphGS: Preprocess Video** | Segments a raw video onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` is a real dropdown of SV4D/SP4D checkpoints found in your ComfyUI `models/sv4d` folder (also scans `models/checkpoints` and MorphGS's own `generative-models/checkpoints`) — not a fixed list — reflecting whatever checkpoint file you've actually downloaded and placed there. |
-| **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. |
+| **MorphGS: Preprocess Character** | `character_source_path` is a dropdown listing rigged `.fbx`/`.glb`/`.gltf` files **and** already-prepared character folders found under ComfyUI's own `input/` directory — drop your file there (the normal ComfyUI upload location) and pick it here, no manual path-typing. Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
+| **MorphGS: Preprocess Video** | `video_path` is likewise a dropdown of video files (`.mp4`/`.mov`/`.avi`/`.mkv`/`.webm`) found under `input/`. Segments the clip onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` is a real dropdown of SV4D/SP4D checkpoints found in your ComfyUI `models/sv4d` folder (also scans `models/checkpoints` and MorphGS's own `generative-models/checkpoints`) — not a fixed list — reflecting whatever checkpoint file you've actually downloaded and placed there. |
+| **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. `seed` has the standard ComfyUI seed widget (fixed/increment/decrement/randomize) and controls MorphGS's own training-time randomness. |
 | **MorphGS: Export Animated Mesh** | Turns a trained experiment into a real, standalone animated 3D asset (`.glb`/`.fbx`) instead of only a rendered video. Replays the trained `AnimationField` checkpoint frame-by-frame to get absolute per-joint transforms, then bakes them onto a skinned mesh in headless Blender: onto the character's *original* rigged file when one is available (which also carries over that file's own materials/textures automatically), or -- for characters with no such file on disk (e.g. MorphGS's own bundled demo characters) -- onto a fresh armature built directly from `mesh.obj` + the RigNet-format rig file's own joint positions and per-vertex skin weights, first re-resolving those weights (`resolve_skinning_weights.py`) exactly as MorphGS's own `Rig` class would for that character's config (some characters' configs apply heat-diffusion smoothing to the raw rig-file weights before training), and reading UVs plus a `.mtl`-referenced texture image if present (or, for characters with no UV/material data at all -- like MorphGS's own bundled `spot` -- per-vertex colors, if `mesh.obj` uses trimesh's "v x y z r g b" extension) so the exported mesh keeps its appearance too. Both `.glb` (self-contained, textures embedded) and `.fbx` (textures embedded via `embed_textures`) carry textures through when the source has them. Shows the result directly on the node itself as soon as it finishes (no separate node needed for that), **and** also outputs `preview_path` -- the same output-dir-relative string ComfyUI-Hunyuan3DWrapper's own `Hy3DExportMesh` returns -- so you can additionally wire it into ComfyUI's native **Preview 3D & Animation** (`Preview3D`) node, exactly like Hunyuan3DWrapper's own example workflow does, if you want that as a separate, movable node in the graph. |
 
 There is deliberately no "Setup SV4D" node. `install.py` (run automatically by the Manager)
@@ -41,12 +41,21 @@ offer here either way. Not needed at all for the DINOv2 features Preprocess Char
 no dedicated folder" pattern ComfyUI-Hunyuan3DWrapper and ComfyUI-HY-Motion1 use for their own
 CLIP/LLM helper models), or for SkinTokens (handled by ComfyUI-SkinTokens's own node).
 
-Each node caches its own outputs and skips re-running a stage that's already done (unless
-`force_reprocess`/`force_retrain` is set), so you can safely re-run an upstream node without
-redoing an expensive downstream step. Every node is also an `OUTPUT_NODE`, so any one of them
-can be queued and will actually execute on its own while you're building out a graph step by
-step -- without this, ComfyUI's execution engine prunes out a node with nothing downstream
-consuming its result, and queuing it alone silently does nothing.
+Each node caches its own outputs **on disk** and skips re-running a stage that's already done
+(unless `force_reprocess`/`force_retrain`/`force_reexport` is set) -- deliberately not relying
+on ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI restart and
+training here can take hours. This is what actually lets you restart ComfyUI mid-pipeline
+without losing finished work. One nuance: `MorphGS: Train & Render`'s `seed` does **not** by
+itself invalidate this cache at the same `iterations` (MorphGS's own output filenames are keyed
+by `iterations` only, not seed) -- turn on `force_retrain` too if you want a fresh run at a new
+seed. If a node looks like it's reprocessing every time even with the force flag off, check
+whether `scene_name`/`character_name`/`iterations` actually stayed identical between runs --
+any of those changing points at a different (correctly nonexistent) output path.
+
+Every node is also an `OUTPUT_NODE`, so any one of them can be queued and will actually execute
+on its own while you're building out a graph step by step -- without this, ComfyUI's execution
+engine prunes out a node with nothing downstream consuming its result, and queuing it alone
+silently does nothing.
 
 ## Installation
 

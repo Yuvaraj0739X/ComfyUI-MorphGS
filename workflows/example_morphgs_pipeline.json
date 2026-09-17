@@ -1,5 +1,5 @@
 {
-  "id": "7a7f581e-2d07-4fdd-9580-6c1ed55bbd24",
+  "id": "9c8b4f90-3c8c-4c23-be4b-ca2b21c6055d",
   "revision": 0,
   "last_node_id": 7,
   "last_link_id": 5,
@@ -39,7 +39,7 @@
         "Node name for S&R": "MorphGSPreprocessCharacter"
       },
       "widgets_values": [
-        "/workspace/inputs/character.fbx",
+        "",
         "my_character",
         1.6,
         false
@@ -80,7 +80,7 @@
         "Node name for S&R": "MorphGSPreprocessVideo"
       },
       "widgets_values": [
-        "/workspace/inputs/video.mp4",
+        "",
         "my_scene",
         false,
         "sv4d",
@@ -137,6 +137,8 @@
       },
       "widgets_values": [
         5000,
+        43,
+        "fixed",
         false
       ]
     },

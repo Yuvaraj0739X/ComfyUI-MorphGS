@@ -17,9 +17,60 @@ from .process_utils import node_script_path, run_blender_script, run_python
 CATEGORY = "MorphGS"
 
 
+def _list_input_files(extensions):
+    """Files under ComfyUI's own input/ directory (recursively, "subfolder/name.ext" style,
+    the same convention LoadImage's own dropdown uses) matching one of the given extensions.
+    Falls back to an empty list if folder_paths isn't importable (the Comfy Registry's
+    isolated node scanner, which has no such module) -- INPUT_TYPES must still return
+    something usable in that case, an empty COMBO list is valid."""
+    try:
+        import folder_paths
+
+        input_dir = folder_paths.get_input_directory()
+    except Exception:
+        return []
+    results = []
+    for root, _dirs, files in os.walk(input_dir):
+        rel_root = os.path.relpath(root, input_dir)
+        for name in files:
+            if os.path.splitext(name)[1].lower() in extensions:
+                rel_path = name if rel_root == "." else os.path.join(rel_root, name)
+                results.append(rel_path.replace(os.sep, "/"))
+    return sorted(results)
+
+
+def _list_input_prepared_folders():
+    """Subfolders under ComfyUI's input/ directory that already look like a prepared MorphGS
+    character (contain mesh.obj directly) -- so a previously-converted character can be
+    re-selected without re-running Blender. Same folder_paths caveat as _list_input_files."""
+    try:
+        import folder_paths
+
+        input_dir = folder_paths.get_input_directory()
+    except Exception:
+        return []
+    results = []
+    for root, _dirs, files in os.walk(input_dir):
+        if "mesh.obj" in files and root != input_dir:
+            rel_path = os.path.relpath(root, input_dir).replace(os.sep, "/")
+            results.append(rel_path)
+    return sorted(results)
+
+
+def _resolve_input_path(selection):
+    """Resolve a value picked from _list_input_files/_list_input_prepared_folders's dropdown
+    back into a real filesystem path under ComfyUI's input/ directory."""
+    import folder_paths
+
+    return os.path.join(folder_paths.get_input_directory(), *selection.split("/"))
+
+
 class MorphGSPreprocessCharacter:
     """
-    Prepares a rigged character for MorphGS. Accepts either:
+    Prepares a rigged character for MorphGS. character_source_path is a dropdown of files
+    (.fbx/.glb/.gltf) and already-prepared folders (containing mesh.obj) found under ComfyUI's
+    own input/ directory -- drop your rigged character in there (ComfyUI's normal upload
+    location) and it shows up here, no manual path-typing needed. Handles either:
       - a rigged .fbx (e.g. Mixamo) or .glb (e.g. SkinTokens/TokenRig output) -- anything
         Blender can import with an armature + skinned mesh -- auto-converted to mesh.obj
         + a RigNet-format rig, or
@@ -29,9 +80,12 @@ class MorphGSPreprocessCharacter:
 
     @classmethod
     def INPUT_TYPES(cls):
+        options = _list_input_files({".fbx", ".glb", ".gltf"}) + _list_input_prepared_folders()
+        if not options:
+            options = [""]
         return {
             "required": {
-                "character_source_path": ("STRING", {"default": "", "multiline": False}),
+                "character_source_path": (options, {}),
                 "character_name": ("STRING", {"default": "my_character"}),
                 "target_height": ("FLOAT", {"default": 1.6, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
@@ -49,6 +103,7 @@ class MorphGSPreprocessCharacter:
 
     def run(self, character_source_path, character_name, target_height, force_reprocess):
         log = []
+        character_source_path = _resolve_input_path(character_source_path)
         char_dir = os.path.join(config.MORPHGS_HOME, "demo", "characters", character_name)
 
         ext = os.path.splitext(character_source_path)[1].lower()
@@ -137,6 +192,8 @@ class MorphGSPreprocessVideo:
     """
     Prepares a source video for MorphGS: segments + composites onto a white square
     background if needed, then runs SV4D/SP4D multi-view synthesis + feature extraction.
+    video_path is a dropdown of video files found under ComfyUI's own input/ directory --
+    drop your clip in there and it shows up here, no manual path-typing needed.
 
     sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found under the
     morphgs_sv4d_checkpoints category (registered by this package at load time, via
@@ -169,9 +226,11 @@ class MorphGSPreprocessVideo:
         except Exception:
             pass  # No folder_paths available -- fall back to plain mode names.
 
+        video_options = _list_input_files({".mp4", ".mov", ".avi", ".mkv", ".webm"}) or [""]
+
         return {
             "required": {
-                "video_path": ("STRING", {"default": "", "multiline": False}),
+                "video_path": (video_options, {}),
                 "scene_name": ("STRING", {"default": "my_scene"}),
                 "already_masked": ("BOOLEAN", {"default": False}),
                 "sv4d_mode": (sv4d_options, {"default": sv4d_options[0]}),
@@ -191,6 +250,7 @@ class MorphGSPreprocessVideo:
 
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, force_reprocess):
         log = []
+        video_path = _resolve_input_path(video_path)
         mode, filename = _resolve_sv4d_selection(sv4d_mode)
 
         import folder_paths
@@ -241,6 +301,25 @@ class MorphGSTrainAndRender:
     """
     Registers/trains the <scene>_to_<character> experiment and returns the rendered
     output video, both as a file path and as an IMAGE batch for in-graph preview.
+
+    seed controls MorphGS's own training-time randomness (Gaussian initialization, sampling --
+    threaded through to main.py as --project.seed, the same config field MorphGS's own configs
+    set to 43 by default) and has the standard ComfyUI seed widget next to it
+    (fixed/increment/decrement/randomize) so you can get a different training result the usual
+    way. One real caveat: MorphGS's own output filenames are keyed by iterations only, not
+    seed (rendered_video_<iterations>.mp4) -- so changing just the seed at the same iterations
+    does NOT by itself invalidate the on-disk cache below. If you want a fresh run at a new
+    seed but the same iterations, turn on force_retrain too.
+
+    force_retrain exists because the check below (skip training if the render already exists)
+    is deliberately a real, on-disk check, not ComfyUI's own in-memory result cache -- training
+    can take hours, and ComfyUI's own cache doesn't survive a restart, so relying on it alone
+    would mean losing hours of finished training the moment ComfyUI restarts. This disk check
+    is what actually lets you safely restart ComfyUI (or re-queue the same node while building
+    out the rest of the graph) without retraining from scratch. force_retrain=False is the
+    normal state; if it looks like every run is retraining anyway, check whether scene_name/
+    character_name/iterations actually stayed identical between runs -- any of those changing
+    points at a different output path that (correctly) doesn't exist yet.
     """
 
     @classmethod
@@ -250,6 +329,7 @@ class MorphGSTrainAndRender:
                 "scene_name": ("STRING", {"default": ""}),
                 "character_name": ("STRING", {"default": ""}),
                 "iterations": ("INT", {"default": 5000, "min": 100, "max": 100000, "step": 100}),
+                "seed": ("INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
                 "force_retrain": ("BOOLEAN", {"default": False}),
             }
         }
@@ -263,7 +343,7 @@ class MorphGSTrainAndRender:
     # entirely and queuing it alone would do nothing (confirmed via a real API test on an
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
-    def run(self, scene_name, character_name, iterations, force_retrain):
+    def run(self, scene_name, character_name, iterations, seed, force_retrain):
         log = []
         experiment = f"{scene_name}_to_{character_name}"
         config_path = os.path.join(config.MORPHGS_HOME, "configs", "demo", f"{experiment}.yaml")
@@ -283,7 +363,11 @@ class MorphGSTrainAndRender:
         if force_retrain or not os.path.isfile(render_path):
             out = run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "main.py"),
-                ["--config", f"demo/{experiment}.yaml", f"--model.opt.iterations={iterations}"],
+                [
+                    "--config", f"demo/{experiment}.yaml",
+                    f"--model.opt.iterations={iterations}",
+                    f"--project.seed={seed}",
+                ],
                 timeout=None,
             )
             log.append(out)
