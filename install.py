@@ -165,7 +165,13 @@ def ensure_pytorch3d():
         return
     except ImportError:
         pass
-    pip_install("git+https://github.com/facebookresearch/pytorch3d.git")
+    # pytorch3d's own setup.py needs `import torch` to succeed *during the build itself* (to
+    # pick CUDA extension settings) -- pip's default build isolation runs that step in a
+    # throwaway env that does NOT include this environment's already-installed torch, causing
+    # a "ModuleNotFoundError: No module named 'torch'" failure even though torch is right
+    # there. --no-build-isolation is pytorch3d's own documented install method for exactly
+    # this reason (same as MorphGS's own two CUDA extensions below, which already use it).
+    pip_install("git+https://github.com/facebookresearch/pytorch3d.git", "--no-build-isolation")
 
 
 def ensure_morphgs_requirements():
