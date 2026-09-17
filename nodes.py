@@ -173,6 +173,45 @@ _SV4D_CHECKPOINTS = {
 }
 
 
+def _stage_sv4d_checkpoint(ckpt_path, filename):
+    """Make the checkpoint reachable at the exact path SV4D actually loads it from.
+
+    MorphGS's preprocess_src.py chdir's into src/extlibs/generative-models and loads the
+    checkpoint by the relative path "checkpoints/<name>.safetensors" hardcoded in
+    generative-models' own sampling configs. So wherever the user keeps the actual file
+    (ComfyUI's models/sv4d, models/checkpoints, ...), it ALSO has to be reachable at that one
+    relative location, or the load dies with a bare "FileNotFoundError: No such file or
+    directory: checkpoints/sv4d2.safetensors" deep inside sgm -- confirmed in practice, with
+    the file sitting correctly in models/sv4d the whole time.
+
+    Linked rather than copied: these checkpoints are ~12GB. Falls back hardlink -> copy for
+    filesystems that don't allow symlinks."""
+    staged_dir = os.path.join(
+        config.MORPHGS_HOME, "src", "extlibs", "generative-models", "checkpoints"
+    )
+    staged_path = os.path.join(staged_dir, filename)
+    os.makedirs(staged_dir, exist_ok=True)
+
+    # lexists, not exists: a BROKEN symlink (e.g. left by a previously-moved checkpoint) is
+    # invisible to exists() but still blocks creating a new link over it.
+    if os.path.lexists(staged_path):
+        if os.path.exists(staged_path) and os.path.realpath(staged_path) == os.path.realpath(ckpt_path):
+            return f"SV4D checkpoint already in place at {staged_path}"
+        os.remove(staged_path)
+
+    for link, describe in (
+        (os.symlink, "Symlinked"),
+        (os.link, "Hard-linked"),
+    ):
+        try:
+            link(ckpt_path, staged_path)
+            return f"{describe} {ckpt_path} -> {staged_path}"
+        except OSError:
+            continue
+    shutil.copy(ckpt_path, staged_path)
+    return f"Copied {ckpt_path} -> {staged_path} (neither symlink nor hardlink was available)"
+
+
 def _resolve_sv4d_selection(selection):
     """Accepts either a friendly mode name (sv4d/sp4d/sv4d2_8views, the fallback shown when
     the morphgs_sv4d_checkpoints folder can't be listed -- e.g. the Comfy Registry's isolated
@@ -263,6 +302,7 @@ class MorphGSPreprocessVideo:
                 f"https://huggingface.co/{hf_repo} and place it in your ComfyUI "
                 f"models/sv4d folder (models/checkpoints also works)."
             )
+        log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
