@@ -251,6 +251,67 @@ def _disable_xformers_in_sv4d_config(filename):
     )
 
 
+def _sdpa_all_backends_work():
+    """Whether PyTorch's own attention survives sgm's "enable everything, let torch pick"
+    backend setting at SV4D's head dim (512). Probed in a subprocess, synchronized so an async
+    CUDA fault surfaces here rather than later."""
+    probe = (
+        "import torch, torch.nn.functional as F\n"
+        "from torch.backends.cuda import sdp_kernel\n"
+        "assert torch.cuda.is_available()\n"
+        "q = torch.zeros((1, 1, 64, 512), dtype=torch.float16, device='cuda')\n"
+        "with sdp_kernel(enable_math=True, enable_flash=True, enable_mem_efficient=True):\n"
+        "    F.scaled_dot_product_attention(q, q, q)\n"
+        "torch.cuda.synchronize()\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=config.MORPHGS_HOME,
+    )
+    return proc.returncode == 0
+
+
+_SGM_SDPA_ALL_BACKENDS = (
+    'None: {"enable_math": True, "enable_flash": True, "enable_mem_efficient": True},'
+)
+_SGM_SDPA_MATH_ONLY = (
+    'None: {"enable_math": True, "enable_flash": False, "enable_mem_efficient": False},'
+)
+
+
+def _force_math_sdpa_in_sgm():
+    """Pin sgm's attention to PyTorch's math SDPA backend when the others can't serve it.
+
+    sgm's CrossAttention defaults to backend=None, which it maps to "enable flash + mem
+    efficient + math and let torch choose". At SV4D's head dim of 512 on a new GPU that picks a
+    kernel that dies with "CUDA error: invalid argument" (confirmed on an RTX 5090, immediately
+    after the xformers path was already routed around). The math backend has no such limits --
+    slower and more memory, but it always computes.
+
+    Same reasoning as the config rewrite: only applied when the probe shows the default
+    genuinely fails here, so machines where flash/mem-efficient work keep them."""
+    attention_path = os.path.join(
+        config.MORPHGS_HOME, "src", "extlibs", "generative-models",
+        "sgm", "modules", "attention.py",
+    )
+    if not os.path.isfile(attention_path):
+        return f"No sgm attention.py at {attention_path} to check."
+
+    with open(attention_path, encoding="utf-8") as f:
+        original = f.read()
+    if _SGM_SDPA_ALL_BACKENDS not in original:
+        return "sgm attention already pinned to a single SDPA backend."
+    if _sdpa_all_backends_work():
+        return "sgm's default SDPA backends work on this GPU -- leaving them alone."
+
+    with open(attention_path, "w", encoding="utf-8") as f:
+        f.write(original.replace(_SGM_SDPA_ALL_BACKENDS, _SGM_SDPA_MATH_ONLY))
+    return (
+        "Pinned sgm's attention to PyTorch's math SDPA backend: the flash/mem-efficient "
+        "kernels fail on this GPU at SV4D's attention head dim. Slower, but it computes."
+    )
+
+
 def _stage_sv4d_checkpoint(ckpt_path, filename):
     """Make the checkpoint reachable at the exact path SV4D actually loads it from.
 
@@ -382,6 +443,7 @@ class MorphGSPreprocessVideo:
             )
         log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
         log.append(_disable_xformers_in_sv4d_config(filename))
+        log.append(_force_math_sdpa_in_sgm())
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
