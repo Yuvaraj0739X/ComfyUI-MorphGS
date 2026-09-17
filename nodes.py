@@ -489,6 +489,12 @@ class MorphGSPreprocessVideo:
     and place it in your ComfyUI models/sv4d folder. Falls back to a plain list of mode names
     when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner, which
     has no `folder_paths` module at all).
+
+    max_frames caps how much of the clip SV4D synthesises, 0 meaning the whole thing. SV4D is
+    by far the most expensive stage here -- it diffuses 12 frames at a time, so cost scales
+    directly with length and a couple of hundred frames is a ~20-minute run. Set it to 12 or 24
+    to take the whole pipeline end-to-end for a fraction of that while checking a setup, then
+    put it back to 0 for the real render.
     """
 
     @classmethod
@@ -516,6 +522,7 @@ class MorphGSPreprocessVideo:
                 "already_masked": ("BOOLEAN", {"default": False}),
                 "sv4d_mode": (sv4d_options, {"default": sv4d_options[0]}),
                 "fastmode": ("BOOLEAN", {"default": True}),
+                "max_frames": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 12}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
             }
         }
@@ -529,7 +536,8 @@ class MorphGSPreprocessVideo:
     # entirely and queuing it alone would do nothing (confirmed via a real API test on an
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
-    def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, force_reprocess):
+    def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
+            force_reprocess):
         log = []
         video_path = _resolve_input_path(video_path)
         mode, filename = _resolve_sv4d_selection(sv4d_mode)
@@ -572,6 +580,11 @@ class MorphGSPreprocessVideo:
             args = [rgb_path, "--mode", mode]
             if fastmode:
                 args.append("--fastmode")
+            if max_frames > 0:
+                args += ["--sv4d_max_frames", max_frames]
+                log.append(
+                    f"Limiting SV4D to the first {max_frames} frames of {scene_name}."
+                )
             out = _reporting_setup_log(log, lambda: run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "preprocess", "preprocess_src.py"),
                 args,
