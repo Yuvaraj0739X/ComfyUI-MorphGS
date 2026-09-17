@@ -380,9 +380,26 @@ def verify():
     log("Verification passed.")
 
 
+def ensure_setuptools():
+    """`uv`-created virtualenvs (confirmed in practice: this ComfyUI Manager runs its own pip
+    operations via `uv`) don't include setuptools by default, unlike traditional venv/
+    virtualenv. Several older dependencies pulled in by generative-models (pytorch_lightning
+    -> lightning_fabric, confirmed in practice) still rely on the legacy `pkg_resources`
+    namespace-package mechanism that only setuptools provides, and fail with a bare
+    "ModuleNotFoundError: No module named 'pkg_resources'" without it."""
+    try:
+        import pkg_resources  # noqa: F401
+        log("pkg_resources already available, skipping.")
+        return
+    except ImportError:
+        pass
+    pip_install("setuptools")
+
+
 def main():
     log(f"Installing MorphGS into this Python environment: {sys.executable}")
     check_cuda_toolkit()
+    ensure_setuptools()
     ensure_torch()
     ensure_pytorch3d()
     ensure_morphgs_source()
