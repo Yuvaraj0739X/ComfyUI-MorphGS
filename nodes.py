@@ -398,6 +398,46 @@ def _align_vae_decode_dtype():
     )
 
 
+def _experiment_model_dir(experiment):
+    return os.path.join(config.MORPHGS_HOME, "output", experiment, "model", "morphgs")
+
+
+def _available_iterations(experiment):
+    """Training iterations that actually have a deform checkpoint on disk, ascending.
+
+    Mirrors what MorphGS's own render.py does with _find_latest_iteration: the checkpoint
+    that exists is the source of truth, not the iteration number a node happens to be set to."""
+    deform_dir = os.path.join(_experiment_model_dir(experiment), "deform")
+    found = []
+    for path in glob.glob(os.path.join(deform_dir, "iteration_*.pth")):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        try:
+            found.append(int(stem.split("_", 1)[1]))
+        except (IndexError, ValueError):
+            continue
+    return sorted(found)
+
+
+def _describe_iteration_artifacts(experiment):
+    """What is actually on disk for this experiment, for use in an error message."""
+    model_dir = _experiment_model_dir(experiment)
+    if not os.path.isdir(model_dir):
+        return f"Nothing has been trained yet: {model_dir} does not exist."
+    parts = []
+    for name in ("deform", "gaussians", "parametric", "render"):
+        sub = os.path.join(model_dir, name)
+        if not os.path.isdir(sub):
+            parts.append(f"{name}/: missing")
+            continue
+        entries = sorted(os.listdir(sub))
+        parts.append(
+            f"{name}/: {', '.join(entries) if entries else 'empty'}"
+            if len(entries) <= 8
+            else f"{name}/: {len(entries)} files, e.g. {', '.join(entries[:8])}"
+        )
+    return f"Contents of {model_dir} --\n  " + "\n  ".join(parts)
+
+
 def _reporting_setup_log(log, call):
     """Run a pipeline step, and if it fails, put the setup log in front of the error.
 
@@ -651,6 +691,15 @@ class MorphGSTrainAndRender:
             config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "render",
             f"rendered_video_{iterations}.mp4",
         )
+        # main.py writes the deform checkpoint and the render video in the same block, so a run
+        # that finished produces both. Treating the video alone as "already trained" meant a
+        # half-populated output directory silently skipped training and reported success, and
+        # the failure only surfaced later in Export Animated Mesh as a missing checkpoint with
+        # nothing to explain it. Skip only when everything downstream needs is actually present.
+        deform_path = os.path.join(
+            config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "deform",
+            f"iteration_{iterations}.pth",
+        )
 
         if not os.path.isfile(config_path):
             # An empty file fails yaml.safe_load/DotDict (returns None, not {}), so this must be
@@ -660,7 +709,7 @@ class MorphGSTrainAndRender:
                 f.write("{}\n")
             log.append(f"Created minimal experiment config at {config_path} (defaults from configs/base.yaml)")
 
-        if force_retrain or not os.path.isfile(render_path):
+        if force_retrain or not (os.path.isfile(render_path) and os.path.isfile(deform_path)):
             out = run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "main.py"),
                 [
@@ -672,12 +721,17 @@ class MorphGSTrainAndRender:
             )
             log.append(out)
         else:
-            log.append(f"Rendered output already exists at {render_path}, skipping training")
-
-        if not os.path.isfile(render_path):
-            raise RuntimeError(
-                f"Expected rendered video at {render_path} but it was not produced. Full log:\n" + "\n".join(log)
+            log.append(
+                f"Rendered output and deform checkpoint already exist for iteration "
+                f"{iterations}, skipping training"
             )
+
+        for label, path in (("rendered video", render_path), ("deform checkpoint", deform_path)):
+            if not os.path.isfile(path):
+                raise RuntimeError(
+                    f"Training finished but no {label} was produced at {path}. "
+                    f"{_describe_iteration_artifacts(experiment)}\nFull log:\n" + "\n".join(log)
+                )
 
         import folder_paths
 
@@ -771,19 +825,35 @@ class MorphGSExportAnimatedMesh:
         rig_path = os.path.join(char_dir, "rigging", "mesh_ori_rig.txt")
         meta_path = os.path.join(char_dir, "rigging", "conversion_meta.json")
         mesh_obj_path = os.path.join(char_dir, "mesh.obj")
+        # Resolve against what was actually trained rather than trusting this node's own
+        # iterations widget, which is a separate value from Train & Render's and silently
+        # disagrees the moment one of the two is changed. MorphGS's own render.py does exactly
+        # this (_find_latest_iteration) when no iteration is given.
+        available = _available_iterations(experiment)
+        if iterations not in available:
+            if not available:
+                raise RuntimeError(
+                    f"No deform checkpoint found for '{experiment}'. Run MorphGS: Preprocess "
+                    f"Character and MorphGS: Train & Render first.\n"
+                    f"{_describe_iteration_artifacts(experiment)}"
+                )
+            resolved = max(available)
+            log.append(
+                f"No deform checkpoint for iteration {iterations}; using the latest trained "
+                f"iteration {resolved} instead (available: "
+                f"{', '.join(str(i) for i in available)}). Set iterations to {resolved} on this "
+                f"node to match Train & Render and silence this."
+            )
+            iterations = resolved
+
         ckpt_path = os.path.join(
-            config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "deform",
-            f"iteration_{iterations}.pth",
+            _experiment_model_dir(experiment), "deform", f"iteration_{iterations}.pth",
         )
-        render_dir = os.path.join(config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "render")
+        render_dir = os.path.join(_experiment_model_dir(experiment), "render")
         pose_npz_path = os.path.join(render_dir, f"pose_sequence_{iterations}.npz")
         exported_path = os.path.join(render_dir, f"animated_mesh_{iterations}.{output_format}")
 
-        for label, path in [
-            ("rig", rig_path),
-            ("mesh", mesh_obj_path),
-            ("deform checkpoint", ckpt_path),
-        ]:
+        for label, path in [("rig", rig_path), ("mesh", mesh_obj_path)]:
             if not os.path.isfile(path):
                 raise RuntimeError(
                     f"Required {label} file not found at {path}. Run MorphGS: Preprocess Character "
