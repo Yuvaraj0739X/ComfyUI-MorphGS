@@ -16,13 +16,9 @@ import sys
 from . import config
 
 
-def run_python(script_path: str, args: list, timeout: int = None, env: dict = None) -> str:
-    """
-    Run a MorphGS script with ComfyUI's own Python interpreter, from MORPHGS_HOME. Raises
-    RuntimeError with the full captured stdout+stderr on any non-zero exit -- errors are
-    surfaced verbatim, never swallowed, so failures in the underlying MorphGS/SV4D pipeline
-    are visible directly in the ComfyUI node error rather than silently producing a wrong
-    result.
+def subprocess_env(env: dict = None) -> dict:
+    """Build the environment for a MorphGS subprocess: ComfyUI's own, minus anything that only
+    makes sense inside ComfyUI's process, plus our defaults and the caller's overrides.
 
     XFORMERS_DISABLED=1 is set by default (the caller's own env dict can still override it).
     xFormers' fused attention kernels -- used by both DINOv2's feature extractor and SV4D's own
@@ -32,11 +28,31 @@ def run_python(script_path: str, args: list, timeout: int = None, env: dict = No
     skip xFormers and fall back to plain PyTorch attention instead, which works on any
     hardware (just slower) -- set proactively here so the same failure doesn't have to be
     hit again at the next pipeline stage that happens to use xFormers internally.
+
+    LD_PRELOAD is dropped. Managed ComfyUI images (Vast.ai's among them) start ComfyUI with
+    comfy-aimdo preloaded, which installs CUDA *driver-level function hooks* to implement its
+    DynamicVRAM feature -- "cuda-funchooks.c: hooks successfully installed" in the startup log.
+    A child process inherits that preload but none of aimdo's per-process setup, so it ends up
+    running with hooked CUDA entry points that were never initialised for it. Our subprocesses
+    manage their own VRAM and gain nothing from aimdo, so they run without the preload entirely.
     """
     full_env = os.environ.copy()
     full_env.setdefault("XFORMERS_DISABLED", "1")
+    full_env.pop("LD_PRELOAD", None)
     if env:
         full_env.update(env)
+    return full_env
+
+
+def run_python(script_path: str, args: list, timeout: int = None, env: dict = None) -> str:
+    """
+    Run a MorphGS script with ComfyUI's own Python interpreter, from MORPHGS_HOME. Raises
+    RuntimeError with the full captured stdout+stderr on any non-zero exit -- errors are
+    surfaced verbatim, never swallowed, so failures in the underlying MorphGS/SV4D pipeline
+    are visible directly in the ComfyUI node error rather than silently producing a wrong
+    result.
+    """
+    full_env = subprocess_env(env)
     proc = subprocess.run(
         [sys.executable, script_path, *[str(a) for a in args]],
         cwd=config.MORPHGS_HOME,

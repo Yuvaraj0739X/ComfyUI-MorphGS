@@ -14,7 +14,7 @@ import sys
 # modules (os, shutil, subprocess, sys, glob, json, urllib) are always safe at module scope.
 
 from . import config
-from .process_utils import node_script_path, run_blender_script, run_python
+from .process_utils import node_script_path, run_blender_script, run_python, subprocess_env
 
 CATEGORY = "MorphGS"
 
@@ -199,6 +199,7 @@ def _xformers_attention_works():
     proc = subprocess.run(
         [sys.executable, "-c", probe],
         capture_output=True, encoding="utf-8", errors="replace", cwd=config.MORPHGS_HOME,
+        env=subprocess_env(),
     )
     return proc.returncode == 0
 
@@ -251,24 +252,48 @@ def _disable_xformers_in_sv4d_config(filename):
     )
 
 
+# The shapes the probe below runs, cheapest first. The second is what SV4D's attention blocks
+# actually feed SDPA: a long token sequence at head dim 512. Probing only something small is
+# worse than not probing at all -- torch quietly serves a tiny tensor from the math kernel no
+# matter which backends are enabled, so the probe reports "all good" while the real workload
+# still dies. That exact mistake is why the first version of this fix silently did nothing.
+_SDPA_PROBE_SHAPES = (
+    (1, 1, 64, 512),
+    (2, 8, 4096, 512),
+)
+
+
 def _sdpa_all_backends_work():
     """Whether PyTorch's own attention survives sgm's "enable everything, let torch pick"
-    backend setting at SV4D's head dim (512). Probed in a subprocess, synchronized so an async
-    CUDA fault surfaces here rather than later."""
+    backend setting at the shapes SV4D actually uses.
+
+    Returns (ok, detail) -- detail carries the failing output so the caller can log *why* it
+    decided to patch, which is otherwise invisible from a node error.
+
+    Probed in a subprocess: a hard CUDA fault here would otherwise take ComfyUI down with it.
+    Each shape is synchronized so an async CUDA fault surfaces at the probe rather than
+    thousands of kernels later."""
     probe = (
         "import torch, torch.nn.functional as F\n"
         "from torch.backends.cuda import sdp_kernel\n"
         "assert torch.cuda.is_available()\n"
-        "q = torch.zeros((1, 1, 64, 512), dtype=torch.float16, device='cuda')\n"
-        "with sdp_kernel(enable_math=True, enable_flash=True, enable_mem_efficient=True):\n"
-        "    F.scaled_dot_product_attention(q, q, q)\n"
-        "torch.cuda.synchronize()\n"
+        f"for shape in {list(_SDPA_PROBE_SHAPES)!r}:\n"
+        "    q = torch.zeros(shape, dtype=torch.float16, device='cuda')\n"
+        "    with sdp_kernel(enable_math=True, enable_flash=True, enable_mem_efficient=True):\n"
+        "        F.scaled_dot_product_attention(q, q, q)\n"
+        "    torch.cuda.synchronize()\n"
+        "    del q\n"
+        "    torch.cuda.empty_cache()\n"
     )
     proc = subprocess.run(
         [sys.executable, "-c", probe],
         capture_output=True, encoding="utf-8", errors="replace", cwd=config.MORPHGS_HOME,
+        env=subprocess_env(),
     )
-    return proc.returncode == 0
+    if proc.returncode == 0:
+        return True, ""
+    tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
+    return False, " | ".join(line.strip() for line in tail)
 
 
 _SGM_SDPA_ALL_BACKENDS = (
@@ -301,15 +326,34 @@ def _force_math_sdpa_in_sgm():
         original = f.read()
     if _SGM_SDPA_ALL_BACKENDS not in original:
         return "sgm attention already pinned to a single SDPA backend."
-    if _sdpa_all_backends_work():
+    ok, detail = _sdpa_all_backends_work()
+    if ok:
         return "sgm's default SDPA backends work on this GPU -- leaving them alone."
 
     with open(attention_path, "w", encoding="utf-8") as f:
         f.write(original.replace(_SGM_SDPA_ALL_BACKENDS, _SGM_SDPA_MATH_ONLY))
     return (
         "Pinned sgm's attention to PyTorch's math SDPA backend: the flash/mem-efficient "
-        "kernels fail on this GPU at SV4D's attention head dim. Slower, but it computes."
+        f"kernels fail on this GPU at SV4D's attention shapes ({detail}). Slower, but it "
+        "computes."
     )
+
+
+def _reporting_setup_log(log, call):
+    """Run a pipeline step, and if it fails, put the setup log in front of the error.
+
+    The environment fixes this node applies before sampling (checkpoint staging, the xformers
+    config rewrite, the SDPA backend pin) each report what they decided into `log` -- but `log`
+    is only returned on success, so a failure downstream discarded exactly the information
+    needed to tell "the fix didn't work" apart from "the fix never ran". Chained with `from
+    None`: str(exc) already carries the subprocess's full output, so re-showing the original
+    traceback would only duplicate it."""
+    try:
+        return call()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "--- setup steps before the failure ---\n" + "\n".join(log) + f"\n\n{exc}"
+        ) from None
 
 
 def _stage_sv4d_checkpoint(ckpt_path, filename):
@@ -456,7 +500,9 @@ class MorphGSPreprocessVideo:
             mask_args = [pipeline_src_video, rgb_path]
             if already_masked:
                 mask_args.append("--skip-mask")
-            out = run_python(node_script_path("mask_video.py"), mask_args, timeout=1800)
+            out = _reporting_setup_log(
+                log, lambda: run_python(node_script_path("mask_video.py"), mask_args, timeout=1800)
+            )
             log.append(out)
         else:
             log.append(f"{rgb_path} already exists, skipping masking step")
@@ -466,11 +512,11 @@ class MorphGSPreprocessVideo:
             args = [rgb_path, "--mode", mode]
             if fastmode:
                 args.append("--fastmode")
-            out = run_python(
+            out = _reporting_setup_log(log, lambda: run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "preprocess", "preprocess_src.py"),
                 args,
                 timeout=3600,
-            )
+            ))
             log.append(out)
         else:
             log.append(f"processed_videos/{scene_name} already exists, skipping preprocess_src.py")
