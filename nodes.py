@@ -344,6 +344,60 @@ def _chunk_sgm_attention_batches():
     )
 
 
+_SGM_DECODE_SCALE = "        z = 1.0 / self.scale_factor * z\n"
+_SGM_DECODE_SCALE_CAST = (
+    "        z = 1.0 / self.scale_factor * z\n"
+    "        z = _morphgs_match_dtype(z, self.first_stage_model)  # ComfyUI-MorphGS\n"
+)
+
+_SGM_DTYPE_HELPER = '''
+
+# --- added by ComfyUI-MorphGS -------------------------------------------------------------
+def _morphgs_match_dtype(z, module):
+    """Cast latents to the dtype of the module that is about to consume them.
+
+    SV4D's config sets disable_first_stage_autocast: True, so decode_first_stage runs with
+    autocast off -- nothing casts anything automatically. The VAE is loaded in fp16 but the
+    sampler returns fp32 latents, so the decoder's first conv gets "Input type (float) and bias
+    type (c10::Half) should be the same". Under autocast this cast would have happened
+    implicitly; doing it explicitly matches that behaviour without re-enabling autocast for the
+    rest of the decode."""
+    for param in module.parameters():
+        return z.to(param.dtype)
+    return z
+'''
+
+
+def _align_vae_decode_dtype():
+    """Make sgm's first-stage decode cast latents to the VAE's own dtype."""
+    diffusion_path = os.path.join(
+        config.MORPHGS_HOME, "src", "extlibs", "generative-models",
+        "sgm", "models", "diffusion.py",
+    )
+    if not os.path.isfile(diffusion_path):
+        return f"No sgm diffusion.py at {diffusion_path} to patch."
+
+    with open(diffusion_path, encoding="utf-8") as f:
+        original = f.read()
+    if "_morphgs_match_dtype" in original:
+        return "sgm decode_first_stage already casts latents to the VAE dtype."
+    if original.count(_SGM_DECODE_SCALE) != 1:
+        return (
+            f"WARNING: could not find the latent rescale line in {diffusion_path} -- VAE decode "
+            f"dtype alignment NOT applied. Decoding may fail with 'Input type (float) and bias "
+            f"type (c10::Half) should be the same'."
+        )
+
+    patched = original.replace(_SGM_DECODE_SCALE, _SGM_DECODE_SCALE_CAST) + _SGM_DTYPE_HELPER
+    with open(diffusion_path, "w", encoding="utf-8") as f:
+        f.write(patched)
+    return (
+        "Patched sgm decode_first_stage to cast latents to the VAE's dtype: SV4D disables "
+        "autocast for decoding, so fp32 latents reach an fp16 VAE with nothing to reconcile "
+        "them."
+    )
+
+
 def _reporting_setup_log(log, call):
     """Run a pipeline step, and if it fails, put the setup log in front of the error.
 
@@ -493,6 +547,7 @@ class MorphGSPreprocessVideo:
         log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
         log.append(_disable_xformers_in_sv4d_config(filename))
         log.append(_chunk_sgm_attention_batches())
+        log.append(_align_vae_decode_dtype())
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
