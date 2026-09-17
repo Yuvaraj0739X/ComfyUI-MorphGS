@@ -23,8 +23,18 @@ def run_python(script_path: str, args: list, timeout: int = None, env: dict = No
     surfaced verbatim, never swallowed, so failures in the underlying MorphGS/SV4D pipeline
     are visible directly in the ComfyUI node error rather than silently producing a wrong
     result.
+
+    XFORMERS_DISABLED=1 is set by default (the caller's own env dict can still override it).
+    xFormers' fused attention kernels -- used by both DINOv2's feature extractor and SV4D's own
+    diffusion attention blocks -- don't have compiled kernels for newer GPU architectures.
+    Confirmed in practice on an RTX 5090: "requires device with capability <= (9, 0) but your
+    GPU has capability (12, 0) (too new)". DINOv2 specifically checks this exact env var to
+    skip xFormers and fall back to plain PyTorch attention instead, which works on any
+    hardware (just slower) -- set proactively here so the same failure doesn't have to be
+    hit again at the next pipeline stage that happens to use xFormers internally.
     """
     full_env = os.environ.copy()
+    full_env.setdefault("XFORMERS_DISABLED", "1")
     if env:
         full_env.update(env)
     proc = subprocess.run(
