@@ -101,18 +101,43 @@ def check_cuda_toolkit():
     return nvcc
 
 
-def existing_torch_cuda_version():
+def installed_torch_version():
+    """torch's version string (e.g. "2.10.0+cu130") read from installed package METADATA --
+    never by importing torch. A broken torch install can kill the interpreter outright with a
+    fatal native error rather than a catchable Python exception (confirmed in practice: "Intel
+    oneMKL FATAL ERROR: Cannot load libtorch_cpu.so" ended install.py on the spot), which would
+    take the installer down before it could diagnose or repair anything."""
     try:
-        import torch
-    except ImportError:
+        from importlib.metadata import version
+
+        return version("torch")
+    except Exception:
         return None
-    version = getattr(torch, "__version__", "")
-    cuda_version = getattr(torch.version, "cuda", None)
-    log(f"Existing torch: {version} (CUDA build: {cuda_version})")
-    return cuda_version
+
+
+def probe_torch():
+    """(ok, cuda_version, output) from importing torch in a FRESH SUBPROCESS, so a torch
+    install that crashes on import can't take install.py down with it (see
+    installed_torch_version). cuda_version is torch.version.cuda ("13.0", "11.8", or None for
+    a CPU build) and is only meaningful when ok is True."""
+    probe = "import torch; print('CUDA_VERSION=' + str(torch.version.cuda))"
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
+    )
+    output = (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        return False, None, output
+    cuda_version = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("CUDA_VERSION="):
+            value = line.split("=", 1)[1].strip()
+            cuda_version = None if value in ("None", "") else value
+    return True, cuda_version, output
 
 
 def _parse_cuda_version(cuda_version):
+    """(major, minor) from a torch.version.cuda string: "13.0" -> (13, 0)."""
     try:
         major, minor = cuda_version.split(".")[:2]
         return (int(major), int(minor))
@@ -120,9 +145,82 @@ def _parse_cuda_version(cuda_version):
         return None
 
 
+def _cuda_from_version_string(raw):
+    """(major, minor) from a torch version's local suffix: "2.10.0+cu130" -> (13, 0),
+    "2.0.1+cu118" -> (11, 8). None when there's no +cuXXX suffix to read."""
+    if not raw or "+cu" not in raw:
+        return None
+    digits = "".join(c for c in raw.split("+cu", 1)[1] if c.isdigit())
+    if len(digits) < 3:
+        return None
+    return (int(digits[:-1]), int(digits[-1]))
+
+
+def _torch_release(raw):
+    """(major, minor) from a torch version string: "2.10.0+cu130" -> (2, 10), "2.0.1" -> (2, 0).
+    Compared as a tuple, never as a string -- "2.10" sorts BELOW "2.3" lexically."""
+    if not raw:
+        return None
+    parts = raw.split("+", 1)[0].split(".")
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except (IndexError, ValueError):
+        return None
+
+
+# torch builds from 2.3 onward are compiled against the numpy 2.x ABI; MorphGS's original
+# pinned stack (torch 2.0.1) predates that and needs numpy<2.
+_NUMPY2_MIN_TORCH = (2, 3)
+
+
+def ensure_numpy_matching_torch():
+    """numpy<2 is the correct pin for MorphGS's ORIGINAL torch 2.0.1 stack -- numpy 2.x silently
+    broke torch.from_numpy/pytorch3d there, hit once already during this project. But it is
+    actively WRONG on a modern torch build compiled against the numpy 2.x ABI: confirmed in
+    practice that forcing numpy<2 alongside torch 2.10 left `import torch` dying with "Intel
+    oneMKL FATAL ERROR: Cannot load libtorch_cpu.so". So the pin follows whichever torch
+    release is actually installed rather than being hardcoded in either direction."""
+    raw = installed_torch_version()
+    release = _torch_release(raw)
+    if release is not None and release >= _NUMPY2_MIN_TORCH:
+        log(
+            f"torch {raw} is built against the numpy 2.x ABI -- keeping numpy>=2 to match it. "
+            f"NOT pinning numpy<2, which is only correct for MorphGS's original torch 2.0.x "
+            f"stack and breaks a modern torch's own native libraries."
+        )
+        pip_install("numpy>=2")
+        return
+    log(f"Pinning numpy<2 to match MorphGS's legacy torch stack (installed torch: {raw}).")
+    pip_install("numpy<2")
+
+
 def ensure_torch():
-    cuda_version = existing_torch_cuda_version()
-    parsed = _parse_cuda_version(cuda_version) if cuda_version else None
+    raw = installed_torch_version()
+    parsed = _cuda_from_version_string(raw)
+
+    if raw:
+        log(f"Existing torch: {raw}")
+        ok, runtime_cuda, output = probe_torch()
+        if not ok:
+            log(
+                f"torch {raw} is installed but fails to import:\n{output}\n"
+                f"This is most often a numpy ABI mismatch (numpy pinned below 2 against a torch "
+                f"built for numpy 2.x). Attempting to repair by aligning numpy to this torch build."
+            )
+            ensure_numpy_matching_torch()
+            ok, runtime_cuda, output = probe_torch()
+            if not ok:
+                raise RuntimeError(
+                    f"torch {raw} is installed but still fails to import after aligning numpy:\n"
+                    f"{output}\n\nNothing further this script can do automatically -- the torch "
+                    f"install itself is broken and needs reinstalling for this environment."
+                )
+            log("torch imports cleanly after aligning numpy.")
+        # torch.version.cuda is authoritative; the +cuXXX version suffix is only a fallback for
+        # when torch can't be imported at all (a PyPI-default torch build carries no suffix).
+        if runtime_cuda:
+            parsed = _parse_cuda_version(runtime_cuda) or parsed
+        log(f"torch CUDA build: {runtime_cuda or 'none (CPU build)'}")
 
     if parsed == (11, 8):
         log("Existing torch is already a CUDA 11.8 build -- leaving it as-is, no reinstall needed.")
@@ -142,7 +240,7 @@ def ensure_torch():
         # MorphGS was originally built/tested against -- a build or runtime failure below may
         # trace back to this newer CUDA/torch version rather than to a missing dependency.
         log(
-            f"Existing torch is CUDA {cuda_version}, newer than the CUDA 11.8 build MorphGS's "
+            f"Existing torch is CUDA {parsed[0]}.{parsed[1]}, newer than the CUDA 11.8 build MorphGS's "
             f"compiled extensions were originally built against. NOT forcing a downgrade to "
             f"torch==2.0.1+cu118: that exact version is no longer available from PyTorch's own "
             f"cu118 index for newer Python builds, and CUDA 11.8 doesn't support newer GPU "
@@ -270,10 +368,10 @@ def pip_install_requirements_file(path, env=None):
 def ensure_morphgs_requirements():
     requirements_path = os.path.join(MORPHGS_SRC, "requirements.txt")
     failed = pip_install_requirements_file(requirements_path)
-    # Enforced regardless of what requirements.txt itself pins: numpy 2.x is a known, already-
-    # encountered break for MorphGS's compiled extensions (torch.from_numpy/pytorch3d silently
-    # broke under numpy 2.1 during earlier work on this project).
-    pip_install("numpy<2")
+    # requirements.txt lists a bare `numpy`, so installing it can pull in whichever major
+    # version pip prefers -- realign it to whatever the installed torch was actually built
+    # against (see ensure_numpy_matching_torch; the right answer differs per torch generation).
+    ensure_numpy_matching_torch()
     if failed:
         log(
             f"WARNING: {len(failed)} package(s) from requirements.txt failed to install: "
@@ -363,44 +461,81 @@ def ensure_generative_models():
         )
     pip_install("-e", GENERATIVE_MODELS_DIR)
     pip_install("-e", "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata")
-    # generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
-    # torch.from_numpy/pytorch3d (already encountered once during this project) -- re-pin
-    # immediately, verify() below re-checks this actually held.
-    pip_install("numpy<2")
+    # generative-models' own requirements pin numpy==2.1, which is wrong for the legacy cu118
+    # stack -- realign to whatever the installed torch was actually built against, rather than
+    # assuming either direction (see ensure_numpy_matching_torch). verify() re-checks it held.
+    ensure_numpy_matching_torch()
 
 
 def verify():
-    import torch
-    import gsplat
-    import pytorch3d
-
-    log(f"torch {torch.__version__} (CUDA build {torch.version.cuda}), CUDA available: {torch.cuda.is_available()}")
-    log(f"gsplat {gsplat.__version__}")
-    log(f"pytorch3d {pytorch3d.__version__}")
-
-    assert torch.from_numpy(__import__("numpy").zeros(3)) is not None, "torch.from_numpy is broken"
-    from pytorch3d.renderer import look_at_view_transform  # noqa: F401
-
-    if not torch.cuda.is_available():
+    """Runs in a FRESH SUBPROCESS, for two reasons: this script's own process may hold stale
+    already-imported modules from before packages were reinstalled during this run (so an
+    in-process check can pass or fail for the wrong reasons), and a broken native library can
+    kill the interpreter outright rather than raising (see installed_torch_version)."""
+    script = (
+        "import numpy, torch, gsplat, pytorch3d\n"
+        "from pytorch3d.renderer import look_at_view_transform\n"
+        "import pkg_resources\n"
+        "assert torch.from_numpy(numpy.zeros(3)) is not None, 'torch.from_numpy is broken'\n"
+        "print(f'numpy {numpy.__version__}')\n"
+        "print(f'torch {torch.__version__} (CUDA build {torch.version.cuda}), "
+        "CUDA available: {torch.cuda.is_available()}')\n"
+        "print(f'gsplat {gsplat.__version__}')\n"
+        "print(f'pytorch3d {pytorch3d.__version__}')\n"
+        "print('CUDA_AVAILABLE=' + str(torch.cuda.is_available()))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
+    )
+    output = (proc.stdout + proc.stderr).strip()
+    log(output)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Verification failed (exit {proc.returncode}). The environment is not usable as-is "
+            f"-- see the output above for which import or check broke."
+        )
+    if "CUDA_AVAILABLE=True" not in proc.stdout:
         log("WARNING: torch.cuda.is_available() is False -- training/rendering needs a GPU.")
-
     log("Verification passed.")
 
 
+def pkg_resources_available():
+    """Checked in a FRESH SUBPROCESS: this script's own interpreter may have already cached the
+    import state from before a pip install in the same run."""
+    proc = subprocess.run(
+        [sys.executable, "-c", "import pkg_resources"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
+    )
+    return proc.returncode == 0
+
+
 def ensure_setuptools():
-    """`uv`-created virtualenvs (confirmed in practice: this ComfyUI Manager runs its own pip
-    operations via `uv`) don't include setuptools by default, unlike traditional venv/
-    virtualenv. Several older dependencies pulled in by generative-models (pytorch_lightning
-    -> lightning_fabric, confirmed in practice) still rely on the legacy `pkg_resources`
-    namespace-package mechanism that only setuptools provides, and fail with a bare
-    "ModuleNotFoundError: No module named 'pkg_resources'" without it."""
-    try:
-        import pkg_resources  # noqa: F401
+    """Older dependencies pulled in by generative-models (pytorch_lightning ->
+    lightning_fabric, confirmed in practice) still rely on the legacy `pkg_resources`
+    namespace-package mechanism, failing with "ModuleNotFoundError: No module named
+    'pkg_resources'" without it.
+
+    pkg_resources ships inside setuptools, but setuptools REMOVED it in v81 -- so on a modern
+    environment `pip install setuptools` is worse than useless here: confirmed in practice that
+    setuptools 82.0.1 was already installed, pip reported "Requirement already satisfied", and
+    pkg_resources stayed missing regardless. The fix is a version pin back to the last series
+    that still ships it, and then actually verifying that worked rather than assuming."""
+    if pkg_resources_available():
         log("pkg_resources already available, skipping.")
         return
-    except ImportError:
-        pass
-    pip_install("setuptools")
+    log(
+        "pkg_resources is missing (setuptools >= 81 no longer ships it). Pinning setuptools "
+        "back to the last series that still includes it."
+    )
+    pip_install("setuptools<81")
+    if not pkg_resources_available():
+        raise RuntimeError(
+            "pkg_resources is still missing after installing setuptools<81. generative-models' "
+            "own pytorch_lightning dependency needs it, so MorphGS: Preprocess Video cannot "
+            "work until it's importable."
+        )
+    log("pkg_resources is now available.")
 
 
 def main():
