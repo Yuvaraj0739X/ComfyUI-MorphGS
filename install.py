@@ -132,13 +132,39 @@ def ensure_pytorch3d():
 
 
 def ensure_morphgs_requirements():
+    """Installs each requirements.txt entry as its own separate pip call, not one bulk
+    `pip install -r requirements.txt` -- that list mixes simple, reliable packages (trimesh,
+    numpy, tqdm...) with fragile, binary-heavy ones (open3d, pymeshlab, pykeops,
+    scikit-sparse) that can fail to build on a given machine. A single failing entry inside a
+    bulk `-r` install can abort the WHOLE call, silently leaving even the simple, unrelated
+    packages near it uninstalled -- confirmed in practice: `trimesh` (a lightweight, no-C-
+    extension package with no real reason to fail on its own) ended up missing this way,
+    surfacing later as an opaque ModuleNotFoundError deep inside preprocess_tgt.py instead of
+    a clear message here. Installing one at a time means one bad package only costs that one
+    package, and failures are reported clearly instead of possibly-silently."""
     requirements_path = os.path.join(MORPHGS_SRC, "requirements.txt")
+    failed = []
     if os.path.isfile(requirements_path):
-        pip_install("-r", requirements_path)
+        with open(requirements_path) as f:
+            packages = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        for package in packages:
+            try:
+                pip_install(package)
+            except subprocess.CalledProcessError:
+                log(f"WARNING: failed to install '{package}' from requirements.txt -- continuing "
+                    f"with the rest. Anything that needs it will fail with a clear "
+                    f"ModuleNotFoundError until it's installed by hand.")
+                failed.append(package)
     # Enforced regardless of what requirements.txt itself pins: numpy 2.x is a known, already-
     # encountered break for MorphGS's compiled extensions (torch.from_numpy/pytorch3d silently
     # broke under numpy 2.1 during earlier work on this project).
     pip_install("numpy<2")
+    if failed:
+        log(
+            f"WARNING: {len(failed)} package(s) from requirements.txt failed to install: "
+            f"{', '.join(failed)}. Install these by hand (e.g. `pip install open3d`) if a "
+            f"pipeline step later complains one of them is missing."
+        )
 
 
 def ensure_gsplat():
