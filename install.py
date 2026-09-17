@@ -94,21 +94,58 @@ def check_cuda_toolkit():
     return nvcc
 
 
-def existing_torch_is_cu118():
+def existing_torch_cuda_version():
     try:
         import torch
     except ImportError:
-        return False
+        return None
     version = getattr(torch, "__version__", "")
     cuda_version = getattr(torch.version, "cuda", None)
     log(f"Existing torch: {version} (CUDA build: {cuda_version})")
-    return cuda_version is not None and cuda_version.startswith("11.8")
+    return cuda_version
+
+
+def _parse_cuda_version(cuda_version):
+    try:
+        major, minor = cuda_version.split(".")[:2]
+        return (int(major), int(minor))
+    except Exception:
+        return None
 
 
 def ensure_torch():
-    if existing_torch_is_cu118():
+    cuda_version = existing_torch_cuda_version()
+    parsed = _parse_cuda_version(cuda_version) if cuda_version else None
+
+    if parsed == (11, 8):
         log("Existing torch is already a CUDA 11.8 build -- leaving it as-is, no reinstall needed.")
         return
+
+    if parsed is not None and parsed > (11, 8):
+        # Two real, separate reasons a forced downgrade to torch==2.0.1+cu118 is actively wrong
+        # here, not just unnecessary: (1) PyTorch's own cu118 wheel index has since dropped that
+        # exact version for newer Python builds (confirmed: "Could not find a version that
+        # satisfies the requirement torch==2.0.1" against a real cu118 index listing only
+        # 2.2.0+ upward) -- it may simply no longer be installable at all on a current Python.
+        # (2) CUDA 11.8 has no support for newer GPU architectures at all (e.g. NVIDIA
+        # Blackwell/RTX 50-series) -- even if the install somehow succeeded, it could not
+        # actually run a single kernel on hardware newer than what CUDA 11.8 knows about. So:
+        # leave torch alone and try building pytorch3d/gsplat/MorphGS's own CUDA extensions
+        # against whatever newer stack is already here instead. This is NOT the combination
+        # MorphGS was originally built/tested against -- a build or runtime failure below may
+        # trace back to this newer CUDA/torch version rather than to a missing dependency.
+        log(
+            f"Existing torch is CUDA {cuda_version}, newer than the CUDA 11.8 build MorphGS's "
+            f"compiled extensions were originally built against. NOT forcing a downgrade to "
+            f"torch==2.0.1+cu118: that exact version is no longer available from PyTorch's own "
+            f"cu118 index for newer Python builds, and CUDA 11.8 doesn't support newer GPU "
+            f"architectures (e.g. Blackwell/RTX 50-series) regardless. Leaving torch as-is and "
+            f"attempting to build against this newer stack instead -- untested territory for "
+            f"MorphGS's own CUDA extensions, so a failure below may trace back to this version "
+            f"gap, not a missing dependency."
+        )
+        return
+
     log(
         "Existing torch (if any) is not a CUDA 11.8 build. Installing torch==2.0.1+cu118 / "
         "torchvision==0.15.2+cu118 to match what MorphGS's compiled extensions need. This "

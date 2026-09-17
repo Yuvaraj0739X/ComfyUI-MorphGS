@@ -16,10 +16,21 @@ checkpoint, and go.
 That's a real tradeoff worth understanding before you install it, not a detail to skip:
 MorphGS is pinned to `torch==2.0.1+cu118` and needs two compiled CUDA extensions plus
 `pytorch3d` built from source against that exact CUDA build. `install.py` only replaces your
-existing torch if it isn't already a CUDA 11.8 build — but if it does replace it, that will
-likely break any *other* custom node in the same ComfyUI install that wants a different/newer
-torch. **This is only appropriate for a ComfyUI instance dedicated to running this pipeline**,
-not a general-purpose install with lots of other custom nodes.
+existing torch with that pinned build if your existing one is **older** than CUDA 11.8 (or
+missing) — but if it does replace it, that will likely break any *other* custom node in the
+same ComfyUI install that wants a different/newer torch. **This is only appropriate for a
+ComfyUI instance dedicated to running this pipeline**, not a general-purpose install with lots
+of other custom nodes.
+
+If your existing torch is **newer** than CUDA 11.8 (12.x/13.x — common on a freshly-provisioned
+GPU rental box, and unavoidable on newer GPU generations like NVIDIA Blackwell/RTX 50-series,
+which CUDA 11.8 has no support for at all), `install.py` leaves it alone rather than forcing
+the old pin — torch==2.0.1 is no longer even installable from PyTorch's own cu118 index on a
+current Python anyway. It instead tries building pytorch3d/gsplat/MorphGS's own CUDA
+extensions against whatever newer stack is already there. That combination is **not** what
+MorphGS's compiled extensions were originally built/tested against, so treat it as genuinely
+experimental — a build or runtime failure on a newer GPU/CUDA combination may trace back to
+this version gap rather than a missing dependency.
 
 ## Nodes
 
@@ -66,9 +77,11 @@ silently does nothing.
    yourself. It's a substantial step, not a quick pip install:
    - Checks for the CUDA 11.8 toolkit (`nvcc`) and fails with a clear message if it's missing
      (needed to compile `pytorch3d` and MorphGS's own CUDA extensions from source).
-   - Installs `torch==2.0.1+cu118`/`torchvision==0.15.2+cu118` **only if your existing torch
-     isn't already a CUDA 11.8 build** — otherwise it builds MorphGS's extensions against
-     what you already have, no downgrade needed.
+   - Installs `torch==2.0.1+cu118`/`torchvision==0.15.2+cu118` only if your existing torch is
+     **older** than CUDA 11.8 (or missing) — if it's already CUDA 11.8, or already **newer**
+     (12.x/13.x, e.g. on newer GPUs CUDA 11.8 can't target at all), it's left alone and
+     MorphGS's extensions are built against whatever's already there instead (see "Why this
+     exists" above for the caveat that comes with the newer-stack case).
    - Builds `pytorch3d` from source, installs `gsplat` and MorphGS's other pip dependencies
      (with `numpy<2` enforced regardless of what MorphGS's own `requirements.txt` pins — numpy
      2.x is a known, already-encountered break for `torch.from_numpy`/`pytorch3d` on this
