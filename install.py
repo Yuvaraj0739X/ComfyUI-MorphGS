@@ -173,16 +173,27 @@ def nvidia_pip_cuda_dirs():
         import nvidia
     except ImportError:
         return [], []
-    base = os.path.dirname(nvidia.__file__)
+    # `nvidia` is a PEP 420 namespace package (no single __init__.py, contributed to by each
+    # separately-installed nvidia-* wheel) -- it has no meaningful __file__ (that's None, which
+    # is exactly what broke this the first time), only __path__, an iterable of every
+    # contributing directory.
+    bases = list(getattr(nvidia, "__path__", []) or [])
+    if not bases:
+        nvidia_file = getattr(nvidia, "__file__", None)
+        if nvidia_file:
+            bases = [os.path.dirname(nvidia_file)]
     include_dirs, lib_dirs = [], []
-    for name in os.listdir(base):
-        subdir = os.path.join(base, name)
-        inc = os.path.join(subdir, "include")
-        lib = os.path.join(subdir, "lib")
-        if os.path.isdir(inc):
-            include_dirs.append(inc)
-        if os.path.isdir(lib):
-            lib_dirs.append(lib)
+    for base in bases:
+        if not os.path.isdir(base):
+            continue
+        for name in os.listdir(base):
+            subdir = os.path.join(base, name)
+            inc = os.path.join(subdir, "include")
+            lib = os.path.join(subdir, "lib")
+            if os.path.isdir(inc):
+                include_dirs.append(inc)
+            if os.path.isdir(lib):
+                lib_dirs.append(lib)
     return include_dirs, lib_dirs
 
 
