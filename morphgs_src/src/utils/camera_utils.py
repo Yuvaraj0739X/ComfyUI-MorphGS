@@ -119,7 +119,7 @@ def load_camera_params(proj_path, in_ndc=True, new_img_size=None, device='cuda')
         if not camera_paths:
             raise FileNotFoundError(f"No .pth cameras found in {camera_dir}")
             
-        base_camera = torch.load(os.path.join(camera_dir, camera_paths[0]))
+        base_camera = torch.load(os.path.join(camera_dir, camera_paths[0]), weights_only=False)
         FX, FY = base_camera.focal_length[0].cpu().tolist()
         CX, CY = base_camera.principal_point[0].cpu().tolist()
         imsize = new_img_size if new_img_size is not None else int(base_camera.image_size.view(-1)[0].item())

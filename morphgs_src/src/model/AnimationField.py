@@ -179,7 +179,7 @@ class Animation():
             filename (str): The name of the file from which to load the parameters.
         """
         if os.path.exists(load_path):
-            checkpoint = torch.load(load_path)
+            checkpoint = torch.load(load_path, weights_only=False)
             self.deform_net.load_state_dict(checkpoint['deform_net_state_dict'])
             try:
                 self.optimizer_by_video.load_state_dict(checkpoint['optimizer_by_video_state_dict'])

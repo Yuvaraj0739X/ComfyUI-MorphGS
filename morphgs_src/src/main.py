@@ -127,7 +127,7 @@ def train_pose(morphgs: MorphGS, proj_path, background, opt_cfg, args, device, c
     def _get_keyp_mapping(cam_global_idx):
         cached = keyp_mapping_cache.get(cam_global_idx)
         if cached is None:
-            mapping_dict = torch.load(mapping_paths[cam_global_idx], map_location="cpu")
+            mapping_dict = torch.load(mapping_paths[cam_global_idx], map_location="cpu", weights_only=False)
             px2vtx = mapping_dict["pseudo_gt"]
             confs = mapping_dict["conf"]
             fg_pixels = torch.nonzero(px2vtx >= 0)
@@ -258,7 +258,7 @@ def train_pose(morphgs: MorphGS, proj_path, background, opt_cfg, args, device, c
     thinning_cache_path = os.path.join(proj_path.project_dir, "gt_thinning_cache.pt")
     thinning_cache = {}
     if os.path.exists(thinning_cache_path):
-        thinning_cache = torch.load(thinning_cache_path)
+        thinning_cache = torch.load(thinning_cache_path, weights_only=False)
 
     thinning_footprint = disk(2)
     cache_updated = False

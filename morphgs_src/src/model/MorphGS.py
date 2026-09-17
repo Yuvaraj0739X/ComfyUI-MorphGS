@@ -133,7 +133,7 @@ class MorphGS():
                 load_feat_path = proj_feat_path if os.path.exists(proj_feat_path) else cached_feat_path
                 if load_feat_path == cached_feat_path:
                     print(f"✅ Loaded cached 3D features: {cached_feat_path}")
-                proj_feat_dict = torch.load(load_feat_path)
+                proj_feat_dict = torch.load(load_feat_path, weights_only=False)
                 _xyz = proj_feat_dict['xyz'].to(device)
                 _features = proj_feat_dict['feats_3d'].to(device)
                 _indicies = proj_feat_dict['indices'].to(device)
@@ -177,7 +177,7 @@ class MorphGS():
             if load_deform_only:
                 print("✅ Loaded deform checkpoint only; using original target mesh and skeleton.")
             else:
-                (model_params, first_iter) = torch.load(os.path.join(gs_base, f"iteration_{loaded_iter}.pth"))
+                (model_params, first_iter) = torch.load(os.path.join(gs_base, f"iteration_{loaded_iter}.pth"), weights_only=False)
                 self.model.load_params(os.path.join(pm_base, f"iteration_{loaded_iter}.pth"))
                 self.model.gaussians.restore(model_params, model_cfg.opt)
             print(f"✅ Loaded Iteration: {loaded_iter}")
@@ -187,10 +187,10 @@ class MorphGS():
             self.feature_encoder = Autoencoder(input_dim=features.shape[1], latent_dim=feature_dim)
             self.feature_encoder.to(self.device)
             if os.path.exists(proj_path.encoder_path):
-                self.feature_encoder.load_state_dict(torch.load(proj_path.encoder_path))
+                self.feature_encoder.load_state_dict(torch.load(proj_path.encoder_path, weights_only=False))
             else:
                 src_features = torch.cat([
-                    torch.load(cam.feat_path)
+                    torch.load(cam.feat_path, weights_only=False)
                     for cam in self.cameras
                     if hasattr(cam, 'feat_path') and cam.feat_path is not None
                 ])
@@ -253,7 +253,7 @@ class MorphGS():
             ]
             if len(tgt_feat_paths) == 0:
                 raise RuntimeError("No target feature paths found for sample_3d_features().")
-            tgt_feat_first = torch.load(tgt_feat_paths[0], map_location="cpu").to(dtype=feature_dtype)
+            tgt_feat_first = torch.load(tgt_feat_paths[0], map_location="cpu", weights_only=False).to(dtype=feature_dtype)
             
             src_feat_paths = [
                 cam.feat_path
@@ -262,7 +262,7 @@ class MorphGS():
             ]
             if len(src_feat_paths) == 0:
                 raise RuntimeError("No source feature paths found for sample_3d_features().")
-            src_feat_first = torch.load(src_feat_paths[0], map_location="cpu").to(dtype=feature_dtype)
+            src_feat_first = torch.load(src_feat_paths[0], map_location="cpu", weights_only=False).to(dtype=feature_dtype)
             src_dim = int(src_feat_first.shape[1])
 
             tgt_dim = int(tgt_feat_first.shape[1])
@@ -299,7 +299,7 @@ class MorphGS():
 
         # Aggregate 3D features
         camera_params_path = os.path.join(self.proj_path.tgt_dir, "cameras")
-        camera_params = [torch.load(os.path.join(camera_params_path, f)) for f in sorted(os.listdir(camera_params_path))]
+        camera_params = [torch.load(os.path.join(camera_params_path, f), weights_only=False) for f in sorted(os.listdir(camera_params_path))]
         
         # Load visibility masks
         sampled_visibility_mask = None

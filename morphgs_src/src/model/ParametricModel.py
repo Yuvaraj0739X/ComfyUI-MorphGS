@@ -294,7 +294,7 @@ class ParametricModel():
     
     def load_params(self, load_path):
         if os.path.exists(load_path):
-            checkpoint = torch.load(load_path)
+            checkpoint = torch.load(load_path, weights_only=False)
             if 'delta_log_scale' in checkpoint and checkpoint['delta_log_scale'] is not None:
                 self.delta_log_scale.data.copy_(checkpoint['delta_log_scale'].to(self.delta_log_scale.device))
             elif 'scale' in checkpoint:

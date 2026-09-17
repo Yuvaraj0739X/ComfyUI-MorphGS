@@ -214,7 +214,7 @@ def get_src2tgt_mapping(
     if isinstance(tgt_feats_batch, (list, tuple)):
         print(f"[Mapping] Loading {NV} target feature maps once...", flush=True)
         load_start = time.time()
-        tgt_feats_loaded = [torch.load(path, map_location="cpu") for path in tgt_feats_batch]
+        tgt_feats_loaded = [torch.load(path, map_location="cpu", weights_only=False) for path in tgt_feats_batch]
         print(f"[Mapping] Loaded target feature maps in {time.time() - load_start:.1f}s", flush=True)
 
     existing = sum(1 for n in range(NF) if os.path.exists(os.path.join(out_dir, f"{n:04d}.pt")))
@@ -247,7 +247,7 @@ def get_src2tgt_mapping(
             torch.save({"pseudo_gt": pseudo_gt, "conf": conf}, mapping_path)
             continue
 
-        src_feat_n = torch.load(src_feats_batch[n], map_location="cpu") if isinstance(src_feats_batch, (list, tuple)) else src_feats_batch[n:n + 1]
+        src_feat_n = torch.load(src_feats_batch[n], map_location="cpu", weights_only=False) if isinstance(src_feats_batch, (list, tuple)) else src_feats_batch[n:n + 1]
         best_dtype = src_feat_n.dtype if torch.is_tensor(src_feat_n) else torch.float32
         best_conf = torch.full((P_src,), -float("inf"), device=device, dtype=best_dtype)
         best_vtx = torch.full((P_src,), -1, dtype=torch.long, device=device)
@@ -345,7 +345,7 @@ def aggregate_features_3d(
     feats_count = None
     num_tgt_views = len(tgt_feat_batch) if isinstance(tgt_feat_batch, (list, tuple)) else tgt_feat_batch.shape[0]
     for b in range(num_tgt_views):
-        tgt_feat_b = torch.load(tgt_feat_batch[b], map_location="cpu") if isinstance(tgt_feat_batch, (list, tuple)) else tgt_feat_batch[b:b + 1]
+        tgt_feat_b = torch.load(tgt_feat_batch[b], map_location="cpu", weights_only=False) if isinstance(tgt_feat_batch, (list, tuple)) else tgt_feat_batch[b:b + 1]
         matching_feat_b = F.interpolate(
             tgt_feat_b.to(device=work_device, non_blocking=True),
             size=(image_height, image_width),
