@@ -1,6 +1,8 @@
 import glob
 import os
 import shutil
+import subprocess
+import sys
 
 # folder_paths/torch/numpy/cv2/pytorch3d/gsplat are deliberately NOT imported at module scope:
 # folder_paths only exists inside a running ComfyUI process, and the rest are installed by
@@ -173,6 +175,82 @@ _SV4D_CHECKPOINTS = {
 }
 
 
+# sgm's own attention implementations, and their mathematically-equivalent non-xformers
+# counterparts. "vanilla" -> AttnBlock and "softmax" -> CrossAttention, both plain PyTorch.
+_XFORMERS_ATTENTION_SUBSTITUTIONS = (
+    ("vanilla-xformers", "vanilla"),
+    ("softmax-xformers", "softmax"),
+)
+
+
+def _xformers_attention_works():
+    """Whether xformers' fused attention can actually run on this GPU at the head dimension
+    SV4D's VAE uses (512). Probed in a subprocess so a hard CUDA/native failure can't take
+    ComfyUI down with it.
+
+    Not assumed either way: xformers works fine on the GPUs SV4D was built for, and forcing
+    the fallback everywhere would cost those users real VRAM headroom for no reason."""
+    probe = (
+        "import torch, xformers.ops as xops\n"
+        "assert torch.cuda.is_available()\n"
+        "q = torch.zeros((1, 64, 1, 512), dtype=torch.float16, device='cuda')\n"
+        "xops.memory_efficient_attention(q, q, q)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=config.MORPHGS_HOME,
+    )
+    return proc.returncode == 0
+
+
+def _disable_xformers_in_sv4d_config(filename):
+    """Switch the SV4D sampling config's attention blocks from xformers to plain PyTorch.
+
+    sgm hardcodes `attn_type: vanilla-xformers` / `spatial_transformer_attn_type:
+    softmax-xformers` in the SV4D sampling configs, and make_attn() in
+    sgm/modules/diffusionmodules/model.py honours that with no fallback -- so on a GPU xformers
+    has no kernel for, sampling dies with "No operator found for
+    memory_efficient_attention_forward ... your GPU has capability (12, 0) (too new)".
+    Confirmed on an RTX 5090: every candidate kernel was rejected, some for the architecture
+    and some because SV4D's VAE attention uses head dim 512 (> the 256 flash-attention
+    supports), so no xformers version would have helped.
+
+    Blocking `import xformers` instead would be worse: temporal_ae.py falls back gracefully,
+    but model.py would build a MemoryEfficientAttnBlock anyway and fail with a NameError.
+    Rewriting the config is what actually routes around it.
+
+    Only touches the config for the mode being run, and only when the probe above shows
+    xformers genuinely can't serve it."""
+    config_path = os.path.join(
+        config.MORPHGS_HOME, "src", "extlibs", "generative-models",
+        "scripts", "sampling", "configs", f"{os.path.splitext(filename)[0]}.yaml",
+    )
+    if not os.path.isfile(config_path):
+        return f"No SV4D config at {config_path} to check for xformers attention."
+
+    with open(config_path, encoding="utf-8") as f:
+        original = f.read()
+    patched = original
+    for xformers_attn, plain_attn in _XFORMERS_ATTENTION_SUBSTITUTIONS:
+        patched = patched.replace(xformers_attn, plain_attn)
+    if patched == original:
+        return f"{os.path.basename(config_path)} already uses non-xformers attention."
+
+    if _xformers_attention_works():
+        return (
+            f"{os.path.basename(config_path)} uses xformers attention and this GPU supports "
+            f"it -- leaving it alone."
+        )
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(patched)
+    return (
+        f"Switched {os.path.basename(config_path)} to plain PyTorch attention: xformers has no "
+        f"working kernel for this GPU at SV4D's attention head dim. Sampling will use more "
+        f"VRAM and run slower, but it will actually run."
+    )
+
+
 def _stage_sv4d_checkpoint(ckpt_path, filename):
     """Make the checkpoint reachable at the exact path SV4D actually loads it from.
 
@@ -303,6 +381,7 @@ class MorphGSPreprocessVideo:
                 f"models/sv4d folder (models/checkpoints also works)."
             )
         log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
+        log.append(_disable_xformers_in_sv4d_config(filename))
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
