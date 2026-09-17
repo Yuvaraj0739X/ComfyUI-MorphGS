@@ -167,6 +167,24 @@ def ensure_morphgs_requirements():
         )
 
 
+def ensure_rembg_backend():
+    """rembg (used by this package's own mask_video.py, not a MorphGS dependency) has no
+    built-in inference engine -- plain `pip install rembg` installs successfully but fails at
+    runtime with "No onnxruntime backend found" the first time it's actually used. It needs
+    the `[cpu]` or `[gpu]` extra to pull in onnxruntime. requirements.txt/pyproject.toml
+    already specify rembg[cpu], but this is a second, explicit guarantee in case a given
+    ComfyUI Manager version doesn't re-run a node's requirements.txt on update, only on first
+    install."""
+    try:
+        import onnxruntime  # noqa: F401
+
+        log("onnxruntime already installed, rembg has a working backend.")
+        return
+    except ImportError:
+        pass
+    pip_install("rembg[cpu]")
+
+
 def ensure_gsplat():
     try:
         import gsplat
@@ -248,6 +266,7 @@ def main():
     ensure_pytorch3d()
     ensure_morphgs_source()
     ensure_morphgs_requirements()
+    ensure_rembg_backend()
     ensure_gsplat()
     ensure_cuda_extensions()
     ensure_generative_models()
