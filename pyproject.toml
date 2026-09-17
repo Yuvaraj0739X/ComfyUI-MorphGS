@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-morphgs"
 description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer. Installs MorphGS (rig conversion, DINOv2/SV4D preprocessing, gsplat-based training) directly into this ComfyUI environment via install.py, run automatically by the Manager after installing this node."
-version = "2.3.5"
+version = "2.3.6"
 license = {file = "LICENSE"}
 dependencies = ["numpy", "opencv-python", "rembg[cpu]"]
 

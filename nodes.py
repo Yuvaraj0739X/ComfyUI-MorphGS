@@ -252,90 +252,95 @@ def _disable_xformers_in_sv4d_config(filename):
     )
 
 
-# The shapes the probe below runs, cheapest first. The second is what SV4D's attention blocks
-# actually feed SDPA: a long token sequence at head dim 512. Probing only something small is
-# worse than not probing at all -- torch quietly serves a tiny tensor from the math kernel no
-# matter which backends are enabled, so the probe reports "all good" while the real workload
-# still dies. That exact mistake is why the first version of this fix silently did nothing.
-_SDPA_PROBE_SHAPES = (
-    (1, 1, 64, 512),
-    (2, 8, 4096, 512),
-)
+_SGM_SDPA_CALL = "out = F.scaled_dot_product_attention("
+_SGM_SDPA_CHUNKED_CALL = "out = _morphgs_sdpa("
+
+# Appended to sgm's attention.py by the patch below. Written as source text rather than a
+# monkeypatch because sgm calls F.scaled_dot_product_attention directly at module level in a
+# subprocess we don't otherwise get to run code in.
+_SGM_SDPA_HELPER = '''
+
+# --- added by ComfyUI-MorphGS -------------------------------------------------------------
+# CUDA caps gridDim.y and gridDim.z at 65535. Attention kernels map the batch dimension onto
+# one of those, so a launch with a larger batch fails at launch time with cudaErrorInvalidValue
+# -- surfaced by torch as a bare "CUDA error: invalid argument", before any real compute
+# happens (which is why the GPU looks idle while it fails).
+#
+# SV4D hits this in its temporal blocks: spacetime_attention folds the spatial grid into the
+# batch dimension, so batch becomes latents x H x W -- on the order of 500,000 at 576px with
+# CFG, roughly 8x over the limit. The head dim and sequence length are unremarkable; it is
+# purely the batch dimension that overflows.
+#
+# Attention is independent per batch element, so splitting the batch and concatenating is
+# mathematically identical -- no approximation, no quality change, and the fast kernels stay
+# in play instead of falling back to the math backend.
+_MORPHGS_MAX_SDPA_BATCH = 32768
 
 
-def _sdpa_all_backends_work():
-    """Whether PyTorch's own attention survives sgm's "enable everything, let torch pick"
-    backend setting at the shapes SV4D actually uses.
-
-    Returns (ok, detail) -- detail carries the failing output so the caller can log *why* it
-    decided to patch, which is otherwise invisible from a node error.
-
-    Probed in a subprocess: a hard CUDA fault here would otherwise take ComfyUI down with it.
-    Each shape is synchronized so an async CUDA fault surfaces at the probe rather than
-    thousands of kernels later."""
-    probe = (
-        "import torch, torch.nn.functional as F\n"
-        "from torch.backends.cuda import sdp_kernel\n"
-        "assert torch.cuda.is_available()\n"
-        f"for shape in {list(_SDPA_PROBE_SHAPES)!r}:\n"
-        "    q = torch.zeros(shape, dtype=torch.float16, device='cuda')\n"
-        "    with sdp_kernel(enable_math=True, enable_flash=True, enable_mem_efficient=True):\n"
-        "        F.scaled_dot_product_attention(q, q, q)\n"
-        "    torch.cuda.synchronize()\n"
-        "    del q\n"
-        "    torch.cuda.empty_cache()\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=config.MORPHGS_HOME,
-        env=subprocess_env(),
-    )
-    if proc.returncode == 0:
-        return True, ""
-    tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
-    return False, " | ".join(line.strip() for line in tail)
+def _morphgs_sdpa(query, key, value, attn_mask=None, **kwargs):
+    batch = query.shape[0]
+    try:
+        if batch <= _MORPHGS_MAX_SDPA_BATCH:
+            return F.scaled_dot_product_attention(
+                query, key, value, attn_mask=attn_mask, **kwargs
+            )
+        chunks = []
+        for start in range(0, batch, _MORPHGS_MAX_SDPA_BATCH):
+            stop = min(start + _MORPHGS_MAX_SDPA_BATCH, batch)
+            mask = attn_mask
+            if torch.is_tensor(mask) and mask.dim() == query.dim() and mask.shape[0] == batch:
+                mask = mask[start:stop]
+            chunks.append(F.scaled_dot_product_attention(
+                query[start:stop], key[start:stop], value[start:stop],
+                attn_mask=mask, **kwargs
+            ))
+        return torch.cat(chunks, dim=0)
+    except Exception as exc:
+        # Never let this fail namelessly again: whatever goes wrong, say what was being asked
+        # of the kernel, so the shape is in the error instead of having to be guessed at.
+        raise type(exc)(
+            f"{exc}\\n[ComfyUI-MorphGS] attention shapes: query={tuple(query.shape)} "
+            f"key={tuple(key.shape)} value={tuple(value.shape)} dtype={query.dtype} "
+            f"batch_chunk_limit={_MORPHGS_MAX_SDPA_BATCH}"
+        ) from None
+'''
 
 
-_SGM_SDPA_ALL_BACKENDS = (
-    'None: {"enable_math": True, "enable_flash": True, "enable_mem_efficient": True},'
-)
-_SGM_SDPA_MATH_ONLY = (
-    'None: {"enable_math": True, "enable_flash": False, "enable_mem_efficient": False},'
-)
+def _chunk_sgm_attention_batches():
+    """Split sgm's attention over the batch dimension so its kernel launches stay legal.
 
-
-def _force_math_sdpa_in_sgm():
-    """Pin sgm's attention to PyTorch's math SDPA backend when the others can't serve it.
-
-    sgm's CrossAttention defaults to backend=None, which it maps to "enable flash + mem
-    efficient + math and let torch choose". At SV4D's head dim of 512 on a new GPU that picks a
-    kernel that dies with "CUDA error: invalid argument" (confirmed on an RTX 5090, immediately
-    after the xformers path was already routed around). The math backend has no such limits --
-    slower and more memory, but it always computes.
-
-    Same reasoning as the config rewrite: only applied when the probe shows the default
-    genuinely fails here, so machines where flash/mem-efficient work keep them."""
+    Unconditional, deliberately. The previous two attempts at this failure each gated the fix
+    behind a probe that ran SDPA standalone and asked "does this work here?", and each time the
+    probe passed while the real run died -- because the probe reproduced the head dim, the
+    sequence length and the backends, but always at batch=2, and the batch dimension is the one
+    that actually overflows. A probe can only be trusted if it reproduces the real shape, and
+    the real shape isn't known until the model is built. Chunking is exact and cheap, so it
+    costs nothing to simply always apply it rather than predict whether it's needed."""
     attention_path = os.path.join(
         config.MORPHGS_HOME, "src", "extlibs", "generative-models",
         "sgm", "modules", "attention.py",
     )
     if not os.path.isfile(attention_path):
-        return f"No sgm attention.py at {attention_path} to check."
+        return f"No sgm attention.py at {attention_path} to patch."
 
     with open(attention_path, encoding="utf-8") as f:
         original = f.read()
-    if _SGM_SDPA_ALL_BACKENDS not in original:
-        return "sgm attention already pinned to a single SDPA backend."
-    ok, detail = _sdpa_all_backends_work()
-    if ok:
-        return "sgm's default SDPA backends work on this GPU -- leaving them alone."
+    if "_morphgs_sdpa" in original:
+        return "sgm attention already chunks large batches."
+    if _SGM_SDPA_CALL not in original:
+        return (
+            f"WARNING: could not find sgm's scaled_dot_product_attention call in "
+            f"{attention_path} -- large-batch chunking NOT applied. Sampling may fail with "
+            f"'CUDA error: invalid argument'."
+        )
 
+    patched = original.replace(_SGM_SDPA_CALL, _SGM_SDPA_CHUNKED_CALL) + _SGM_SDPA_HELPER
     with open(attention_path, "w", encoding="utf-8") as f:
-        f.write(original.replace(_SGM_SDPA_ALL_BACKENDS, _SGM_SDPA_MATH_ONLY))
+        f.write(patched)
     return (
-        "Pinned sgm's attention to PyTorch's math SDPA backend: the flash/mem-efficient "
-        f"kernels fail on this GPU at SV4D's attention shapes ({detail}). Slower, but it "
-        "computes."
+        "Patched sgm attention to split batches over 32768 before calling SDPA: CUDA's 65535 "
+        "grid-dimension limit rejects the launch otherwise, and SV4D's temporal blocks fold "
+        "the spatial grid into the batch dimension. Exact, not an approximation."
     )
 
 
@@ -487,7 +492,7 @@ class MorphGSPreprocessVideo:
             )
         log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
         log.append(_disable_xformers_in_sv4d_config(filename))
-        log.append(_force_math_sdpa_in_sgm())
+        log.append(_chunk_sgm_attention_batches())
 
         scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
