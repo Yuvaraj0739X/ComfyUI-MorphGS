@@ -85,9 +85,15 @@ class MorphGSPreprocessCharacter:
         mesh_path = os.path.join(char_dir, "mesh.obj")
         rig_path = os.path.join(char_dir, "rigging", "mesh_ori_rig.txt")
         if not (os.path.isfile(mesh_path) and os.path.isfile(rig_path)):
+            # Blender can exit 0 (success) even when the --python script it ran hit an
+            # uncaught exception partway through -- it doesn't set a non-zero exit code for
+            # that on its own, so run_blender_script's own non-zero-exit check doesn't catch
+            # it. Surface the collected log (Blender's actual stdout/stderr, including any
+            # traceback) here instead of a contextless message, matching every other node's
+            # final failure check in this file.
             raise RuntimeError(
                 f"Character not ready after conversion: expected mesh.obj + rigging/mesh_ori_rig.txt "
-                f"under {char_dir}."
+                f"under {char_dir}. Full log:\n" + "\n".join(log)
             )
 
         feature_dir = os.path.join(char_dir, "feature")
