@@ -467,6 +467,66 @@ def ensure_generative_models():
     ensure_numpy_matching_torch()
 
 
+# Packages whose compiled extensions link against numpy's C ABI. If numpy's major version
+# changes underneath them they keep "working" as far as pip is concerned but fail at import
+# with "module compiled against ABI version 0x1000009 but this version of numpy is 0x2000000"
+# / "numpy.core.multiarray failed to import" -- confirmed in practice with opencv-python, which
+# had been installed while numpy was (wrongly) pinned below 2 and stayed linked against the
+# numpy 1.x ABI after numpy was realigned back to 2.x.
+_NUMPY_ABI_SENSITIVE = [
+    ("cv2", "opencv-python"),
+    ("scipy", "scipy"),
+    ("skimage", "scikit-image"),
+    ("sklearn", "scikit-learn"),
+    ("matplotlib", "matplotlib"),
+    ("open3d", "open3d"),
+    ("pymeshlab", "pymeshlab"),
+]
+
+
+def _import_check(module):
+    """(ok, output) for `import <module>` in a fresh subprocess."""
+    proc = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
+    )
+    return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+
+
+def repair_numpy_abi_mismatches():
+    """Force-reinstalls any package left linked against the wrong numpy ABI, so it picks up a
+    wheel built for the numpy actually installed now. Probes the real import rather than
+    tracking whether numpy changed during THIS run, because the environment may already have
+    been left inconsistent by an earlier run (exactly how this surfaced: cv2 broke only after
+    numpy was corrected, long after the install that mismatched it)."""
+    broken = []
+    for module, package in _NUMPY_ABI_SENSITIVE:
+        ok, output = _import_check(module)
+        if ok:
+            continue
+        if "numpy" not in output.lower():
+            # Not installed at all, or failing for some unrelated reason -- either way not an
+            # ABI mismatch to repair here. Missing packages are already reported by
+            # ensure_morphgs_requirements.
+            continue
+        log(f"{module} fails to import against the installed numpy; reinstalling {package}.")
+        broken.append((module, package))
+
+    for module, package in broken:
+        try:
+            pip_install("--force-reinstall", "--no-cache-dir", package)
+        except subprocess.CalledProcessError:
+            log(f"WARNING: could not reinstall {package}.")
+    unresolved = [module for module, _ in broken if not _import_check(module)[0]]
+    if unresolved:
+        log(
+            f"WARNING: still failing to import after reinstall: {', '.join(unresolved)}. "
+            f"A pipeline step needing one of these will fail until it's resolved."
+        )
+    elif broken:
+        log("All numpy-ABI mismatches resolved.")
+
+
 def verify():
     """Runs in a FRESH SUBPROCESS, for two reasons: this script's own process may hold stale
     already-imported modules from before packages were reinstalled during this run (so an
@@ -476,12 +536,14 @@ def verify():
         "import numpy, torch, gsplat, pytorch3d\n"
         "from pytorch3d.renderer import look_at_view_transform\n"
         "import pkg_resources\n"
+        "import cv2\n"
         "assert torch.from_numpy(numpy.zeros(3)) is not None, 'torch.from_numpy is broken'\n"
         "print(f'numpy {numpy.__version__}')\n"
         "print(f'torch {torch.__version__} (CUDA build {torch.version.cuda}), "
         "CUDA available: {torch.cuda.is_available()}')\n"
         "print(f'gsplat {gsplat.__version__}')\n"
         "print(f'pytorch3d {pytorch3d.__version__}')\n"
+        "print(f'cv2 {cv2.__version__}')\n"
         "print('CUDA_AVAILABLE=' + str(torch.cuda.is_available()))\n"
     )
     proc = subprocess.run(
@@ -550,6 +612,7 @@ def main():
     ensure_gsplat()
     ensure_cuda_extensions()
     ensure_generative_models()
+    repair_numpy_abi_mismatches()
     verify()
     log(
         "Done. To use MorphGS: Preprocess Video, download an SV4D/SP4D checkpoint from Hugging "
