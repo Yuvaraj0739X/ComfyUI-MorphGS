@@ -233,30 +233,36 @@ def ensure_pytorch3d():
     )
 
 
-def ensure_morphgs_requirements():
-    """Installs each requirements.txt entry as its own separate pip call, not one bulk
-    `pip install -r requirements.txt` -- that list mixes simple, reliable packages (trimesh,
-    numpy, tqdm...) with fragile, binary-heavy ones (open3d, pymeshlab, pykeops,
-    scikit-sparse) that can fail to build on a given machine. A single failing entry inside a
-    bulk `-r` install can abort the WHOLE call, silently leaving even the simple, unrelated
-    packages near it uninstalled -- confirmed in practice: `trimesh` (a lightweight, no-C-
-    extension package with no real reason to fail on its own) ended up missing this way,
-    surfacing later as an opaque ModuleNotFoundError deep inside preprocess_tgt.py instead of
-    a clear message here. Installing one at a time means one bad package only costs that one
-    package, and failures are reported clearly instead of possibly-silently."""
-    requirements_path = os.path.join(MORPHGS_SRC, "requirements.txt")
+def pip_install_requirements_file(path, env=None):
+    """Installs each line of a requirements file as its own separate pip call, not one bulk
+    `pip install -r file` -- that treats the whole file as one transaction, so a single
+    unsatisfiable/unbuildable pin can abort the WHOLE call, taking every other package in the
+    file down with it. Confirmed in practice twice: MorphGS's own requirements.txt mixes
+    simple, reliable packages (trimesh, numpy, tqdm...) with fragile, binary-heavy ones
+    (open3d, pymeshlab, pykeops, scikit-sparse) -- trimesh silently never got installed this
+    way, surfacing later as an opaque ModuleNotFoundError deep inside preprocess_tgt.py instead
+    of a clear message here. Then Stability AI's own generative-models/requirements/pt2.txt hit
+    the same thing: it pins triton==2.0.0, which has no build for a current Python at all,
+    aborting that entire install too. Installing one line at a time means one bad pin only
+    costs that one package; returns the list of lines that failed so the caller can report
+    them instead of the failure staying silent."""
     failed = []
-    if os.path.isfile(requirements_path):
-        with open(requirements_path) as f:
-            packages = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-        for package in packages:
-            try:
-                pip_install(package)
-            except subprocess.CalledProcessError:
-                log(f"WARNING: failed to install '{package}' from requirements.txt -- continuing "
-                    f"with the rest. Anything that needs it will fail with a clear "
-                    f"ModuleNotFoundError until it's installed by hand.")
-                failed.append(package)
+    if not os.path.isfile(path):
+        return failed
+    with open(path) as f:
+        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    for line in lines:
+        try:
+            pip_install(line, env=env)
+        except subprocess.CalledProcessError:
+            log(f"WARNING: failed to install '{line}' from {path} -- continuing with the rest.")
+            failed.append(line)
+    return failed
+
+
+def ensure_morphgs_requirements():
+    requirements_path = os.path.join(MORPHGS_SRC, "requirements.txt")
+    failed = pip_install_requirements_file(requirements_path)
     # Enforced regardless of what requirements.txt itself pins: numpy 2.x is a known, already-
     # encountered break for MorphGS's compiled extensions (torch.from_numpy/pytorch3d silently
     # broke under numpy 2.1 during earlier work on this project).
@@ -335,7 +341,19 @@ def ensure_generative_models():
         return
     run(["git", "clone", "--branch", "sp4d", "--depth", "1",
          "https://github.com/Stability-AI/generative-models.git", GENERATIVE_MODELS_DIR])
-    pip_install("-r", os.path.join(GENERATIVE_MODELS_DIR, "requirements", "pt2.txt"))
+    # Per-package, not a bulk `pip install -r pt2.txt` -- that file pins triton==2.0.0, which
+    # has no build for a current Python at all, and a bulk install aborts entirely over that
+    # one line (see pip_install_requirements_file's docstring). triton accelerates certain
+    # fused kernels; SV4D/SP4D's core inference path this package actually needs doesn't
+    # depend on it being present.
+    failed = pip_install_requirements_file(os.path.join(GENERATIVE_MODELS_DIR, "requirements", "pt2.txt"))
+    if failed:
+        log(
+            f"WARNING: {len(failed)} package(s) from generative-models' own requirements failed "
+            f"to install: {', '.join(failed)}. Continuing -- these are usually optional "
+            f"acceleration extras (e.g. triton), not required for SV4D/SP4D's core inference "
+            f"path Preprocess Video actually uses."
+        )
     pip_install("-e", GENERATIVE_MODELS_DIR)
     pip_install("-e", "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata")
     # generative-models' own requirements/pt2.txt pins numpy==2.1, which silently breaks
