@@ -58,6 +58,13 @@ def log(msg):
 
 def run(cmd, **kwargs):
     log("$ " + " ".join(cmd))
+    # Pin cwd to this package's own directory (guaranteed to exist -- this file is running
+    # from inside it) rather than silently inheriting whatever working directory the calling
+    # shell happens to have. Confirmed in practice: pip's own __main__.py calls os.getcwd() on
+    # startup and crashes with a bare FileNotFoundError if the *caller's* cwd has been deleted/
+    # replaced out from under it (e.g. something else -- Manager, a concurrent git operation --
+    # modifying this same directory while install.py runs by hand from a shell sitting in it).
+    kwargs.setdefault("cwd", PACKAGE_DIR)
     subprocess.run(cmd, check=True, **kwargs)
 
 
