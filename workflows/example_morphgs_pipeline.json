@@ -83,7 +83,7 @@
         "",
         "my_scene",
         false,
-        "sv4d",
+        "",
         true,
         false
       ]
@@ -136,6 +136,8 @@
         "Node name for S&R": "MorphGSTrainAndRender"
       },
       "widgets_values": [
+        "my_scene",
+        "my_character",
         5000,
         43,
         "fixed",
@@ -192,6 +194,8 @@
         "Node name for S&R": "MorphGSExportAnimatedMesh"
       },
       "widgets_values": [
+        "my_scene",
+        "my_character",
         5000,
         "glb",
         false
