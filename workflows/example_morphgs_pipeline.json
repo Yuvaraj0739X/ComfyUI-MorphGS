@@ -2,7 +2,7 @@
   "id": "9c8b4f90-3c8c-4c23-be4b-ca2b21c6055d",
   "revision": 0,
   "last_node_id": 7,
-  "last_link_id": 5,
+  "last_link_id": 7,
   "nodes": [
     {
       "id": 2,
@@ -25,8 +25,7 @@
           "name": "character_name",
           "type": "STRING",
           "links": [
-            1,
-            2
+            1
           ]
         },
         {
@@ -66,8 +65,7 @@
           "name": "scene_name",
           "type": "STRING",
           "links": [
-            3,
-            4
+            3
           ]
         },
         {
@@ -131,6 +129,22 @@
           "name": "log",
           "type": "STRING",
           "links": []
+        },
+        {
+          "localized_name": "scene_name",
+          "name": "scene_name",
+          "type": "STRING",
+          "links": [
+            6
+          ]
+        },
+        {
+          "localized_name": "character_name",
+          "name": "character_name",
+          "type": "STRING",
+          "links": [
+            7
+          ]
         }
       ],
       "properties": {
@@ -164,12 +178,12 @@
         {
           "name": "scene_name",
           "type": "STRING",
-          "link": 4
+          "link": 6
         },
         {
           "name": "character_name",
           "type": "STRING",
-          "link": 2
+          "link": 7
         }
       ],
       "outputs": [
@@ -272,26 +286,10 @@
       "STRING"
     ],
     [
-      2,
-      2,
-      0,
-      5,
-      1,
-      "STRING"
-    ],
-    [
       3,
       3,
       0,
       4,
-      0,
-      "STRING"
-    ],
-    [
-      4,
-      3,
-      0,
-      5,
       0,
       "STRING"
     ],
@@ -301,6 +299,22 @@
       1,
       7,
       0,
+      "STRING"
+    ],
+    [
+      6,
+      4,
+      3,
+      5,
+      0,
+      "STRING"
+    ],
+    [
+      7,
+      4,
+      4,
+      5,
+      1,
       "STRING"
     ]
   ],

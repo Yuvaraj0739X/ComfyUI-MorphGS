@@ -674,8 +674,15 @@ class MorphGSTrainAndRender:
             }
         }
 
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_path", "frames", "log")
+    # scene_name/character_name are passed straight through, unchanged, purely so Export
+    # Animated Mesh can take them from HERE rather than from the preprocess nodes. Without
+    # that edge, Export depends only on the preprocess nodes -- exactly as this node does --
+    # so the two are siblings in the graph with no ordering between them, and ComfyUI is free
+    # to run Export first. It then fails with "no deform checkpoint" because training hasn't
+    # happened yet. Appended after the existing outputs rather than inserted before them, so
+    # link indices in graphs built against earlier versions keep pointing at the same sockets.
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_path", "frames", "log", "scene_name", "character_name")
     FUNCTION = "run"
     CATEGORY = CATEGORY
     OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
@@ -742,7 +749,7 @@ class MorphGSTrainAndRender:
         log.append(f"Copied result to {local_video_path}")
 
         frames = self._load_video_as_tensor(local_video_path)
-        return (local_video_path, frames, "\n".join(log))
+        return (local_video_path, frames, "\n".join(log), scene_name, character_name)
 
     @staticmethod
     def _load_video_as_tensor(video_path):
@@ -786,7 +793,11 @@ class MorphGSExportAnimatedMesh:
         raw skin weights before training -- invisible at rest pose but causing severe mesh
         distortion under real motion if the raw weights are used unmodified.
     Requires MorphGS: Preprocess Character and MorphGS: Train & Render to have already
-    been run for this character/scene pair.
+    been run for this character/scene pair. Wire scene_name/character_name from Train &
+    Render's own passthrough outputs, NOT from the preprocess nodes: ComfyUI orders execution
+    by data dependency, so taking them from the preprocess nodes leaves this node and Train &
+    Render as unordered siblings and lets this one run first, against an output directory
+    training has not written yet.
 
     Saves via the same folder_paths.get_save_image_path() convention ComfyUI's own built-in
     SaveGLB node uses, and returns the matching {"ui": {"3d": [...]}} payload -- so this node
