@@ -1,3 +1,31 @@
+# Every pure-Python dependency of ComfyUI-MorphGS. ComfyUI Manager installs this file before
+# running install.py, exactly as it does for any other custom node.
+#
+# Deliberately NOT here:
+#   torch / torchvision     -- owned by ComfyUI (Manager refuses them from a node anyway)
+#   pytorch3d, gsplat       -- compiled CUDA packages whose build must match the running
+#                              torch/CUDA pair; install.py picks the matching prebuilt wheel
+#   sgm (generative-models) -- cloned into morphgs_src by install.py, since MorphGS imports
+#                              its scripts/ helpers from a checkout
+
+# this package's own nodes and helper scripts
 numpy
 opencv-python
 rembg[cpu]
+Pillow
+scipy
+pyyaml
+
+# vendored MorphGS source (morphgs_src/)
+trimesh
+imageio
+imageio-ffmpeg
+scikit-image
+pytorch-msssim
+matplotlib
+tqdm
+fpsample
+einops
+omegaconf
+jaxtyping
+iopath

@@ -1,27 +1,22 @@
-# torch / torchvision / pytorch3d are installed separately (see README)
+# Pure-Python requirements of the vendored MorphGS source, for standalone use.
+# Inside ComfyUI-MorphGS these are installed from the package's top-level requirements.txt.
+# torch / torchvision / pytorch3d / gsplat are installed separately (see README).
 numpy
 scipy
 pytorch-msssim
 scikit-image
-scikit-learn
-scikit-sparse
 Pillow
 opencv-python
 trimesh
-open3d
-plyfile
-pymeshlab
 imageio
 imageio-ffmpeg
 matplotlib
 tqdm
 pyyaml
-# pykeops -- removed: its only use (ARAP k-nearest-neighbours in ParametricModel) is now
-# plain torch. It JIT-compiles CUDA at runtime, which needs a toolkit that a pip-CUDA
-# ComfyUI install does not have, and it failed to link against libnvrtc there.
 fpsample
 jaxtyping
-typeguard
-pyrender
 einops
 omegaconf
+# Dropped as unused by the code paths this copy actually runs: open3d, scikit-learn and
+# pynocchio (only utils/rigging_pinocchio.py, which nothing imports), scikit-sparse (RigModel
+# falls back to scipy when it is absent), pymeshlab, pyrender, plyfile, typeguard, pykeops.

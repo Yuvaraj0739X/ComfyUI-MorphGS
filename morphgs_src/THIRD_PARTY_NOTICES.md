@@ -7,9 +7,10 @@ Those components retain their original copyright notices and license terms.
 
 Affected paths include:
 
-- `src/feature_splatting/`
-- `src/extlibs/latent-gaussian-rasterization/`
-- `src/extlibs/simple-knn/`
+- `src/feature_splatting/` (training loop, camera and Gaussian-model scaffolding adapted
+  from the reference implementation; rendering itself goes through gsplat, Apache-2.0, and
+  nearest-neighbour initialisation through pytorch3d, BSD-3 -- the original
+  `diff-gaussian-rasterization` and `simple-knn` CUDA extensions are no longer bundled)
 
 Files carrying GRAPHDECO/Inria copyright headers remain subject to the original
 Gaussian-Splatting License:

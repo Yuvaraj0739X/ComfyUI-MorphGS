@@ -1,9 +1,34 @@
 [project]
 name = "comfyui-morphgs"
-description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer. Installs MorphGS (rig conversion, DINOv2/SV4D preprocessing, gsplat-based training) directly into this ComfyUI environment via install.py, run automatically by the Manager after installing this node."
-version = "2.5.1"
+description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer (rig conversion, DINOv2/SV4D preprocessing, gsplat-based training, animated .glb/.fbx export). Installs like any other node: pip requirements plus prebuilt pytorch3d/gsplat CUDA wheels matched to your torch build by install.py -- no compiler, no CUDA toolkit, torch untouched. Needs Blender 4.2+ on PATH; SV4D/SP4D checkpoint goes in models/sv4d."
+version = "2.6.0"
 license = {file = "LICENSE"}
-dependencies = ["numpy", "opencv-python", "rembg[cpu]"]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "rembg[cpu]",
+    "Pillow",
+    "scipy",
+    "pyyaml",
+    "trimesh",
+    "imageio",
+    "imageio-ffmpeg",
+    "scikit-image",
+    "pytorch-msssim",
+    "matplotlib",
+    "tqdm",
+    "fpsample",
+    "einops",
+    "omegaconf",
+    "jaxtyping",
+    "iopath",
+]
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
 
 [project.urls]
 Repository = "https://github.com/Yuvaraj0739X/ComfyUI-MorphGS"

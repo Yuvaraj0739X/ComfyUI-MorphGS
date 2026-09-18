@@ -1,45 +1,42 @@
 """
-One-time setup for ComfyUI-MorphGS, run automatically by ComfyUI Manager right after this
-package is installed (and safe to re-run manually: `python install.py`).
+One-time setup for ComfyUI-MorphGS, run automatically by ComfyUI Manager (and comfy-cli) right
+after `requirements.txt` has been installed. Safe to re-run by hand: `python install.py`.
 
-Installs MorphGS's dependencies directly into the SAME Python environment this script is
-running under (ComfyUI's own environment, when Manager runs it) -- there is no separate
-MorphGS environment with this design. This is a real, deliberate tradeoff, not a default to
-take lightly:
+This follows the same install contract every other ComfyUI custom node uses:
 
-  - If your existing torch build isn't CUDA 11.8, this REPLACES it with torch==2.0.1+cu118 to
-    match what MorphGS's compiled CUDA extensions need. That's likely to affect any OTHER
-    custom node in the same ComfyUI install that wants a different/newer torch -- this design
-    is only appropriate for a ComfyUI instance dedicated to running this pipeline.
-  - If your existing torch build already IS a CUDA 11.8 build (common on ComfyUI installs
-    that haven't been recently upgraded), this script leaves it alone and builds MorphGS's
-    extensions against it instead -- no downgrade needed in that case.
-  - pytorch3d and MorphGS's own two CUDA extensions (`simple_knn`,
-    `diff_gaussian_rasterization`) are compiled from source at install time, which needs the
-    CUDA 11.8 toolkit (`nvcc`) actually present on this machine -- this is a real prerequisite
-    this script cannot install for you (it's a system-level package, e.g. `nvidia-cuda-toolkit`
-    or NVIDIA's own installer), and it checks for it upfront with a clear error rather than
-    failing deep inside a pip build log.
+  1. Manager clones the repo,
+  2. installs `requirements.txt` (every pure-Python dependency of this package lives there),
+  3. runs this script.
 
-Blender is a separate system binary (not a MorphGS dependency at all -- confirmed nothing in
-MorphGS's own source imports/uses it; it's only used by this package's own mesh/rig conversion
-and export scripts) and is not installed by this script. Install it separately and point
-MORPHGS_BLENDER_BIN at it if it's not already on PATH.
+Nothing here touches torch. ComfyUI owns torch; Manager refuses to install it from a node's
+requirements anyway (torch/torchvision/torchaudio are on its pip blacklist), and the Comfy
+Registry standards forbid a node from interfering with the shared environment. Whatever torch
+build ComfyUI is running on is the one MorphGS runs on.
 
-MorphGS's own source (a customized fork with fixes: DINOv2-only feature matching, gsplat-based
-rendering, topology-aware ARAP regularization) ships bundled in this package's own
-morphgs_src/ directory -- no separate clone step, no separate repo to keep in sync. This
-script only installs *dependencies* against that already-present source.
+What this script actually does is the one thing `requirements.txt` cannot express: pick the
+two compiled CUDA packages MorphGS needs -- `pytorch3d` (mesh rendering, KNN, chamfer loss)
+and `gsplat` (the Gaussian-splat rasterizer) -- in the build that matches the running
+Python / torch / CUDA combination. Both come as PREBUILT wheels from the cuda-wheels index
+(https://github.com/PozzettiAndrea/cuda-wheels, the same index the comfy-env tooling behind
+ComfyUI-TRELLIS2 and ComfyUI-3D-Pack resolves against), which covers Linux and Windows,
+CPython 3.10-3.14, torch 2.4-2.13 and CUDA 12.4-13.2, with kernels for every GPU generation
+from Turing (sm_75) through Blackwell (sm_120). On the normal path no compiler and no CUDA
+toolkit are needed -- exactly like installing any other node.
 
-This script also clones and installs Stability AI's `generative-models` (the SV4D/SP4D code
-MorphGS: Preprocess Video needs), so that's ready with no extra setup step of its own. There is
-deliberately no node that downloads the actual SV4D/SP4D checkpoint file for you -- SV4D has no
-native ComfyUI model architecture (unlike SV3D/SVD, which ComfyUI does support natively), so it
-couldn't be loaded through the built-in Load Checkpoint node either way. Instead: download the
-checkpoint by hand from Hugging Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and drop it in
-your ComfyUI models/sv4d folder (created and registered automatically by this package, the
-same convention ComfyUI-SkinTokens/models/skintoken and ComfyUI-HY-Motion1/models/HY-Motion
-already use) -- MorphGS: Preprocess Video's sv4d_mode dropdown reads from that folder directly.
+Only when the running torch/CUDA pair has no wheel in that index does this fall back to
+building from source, and only then does it need `nvcc`. That path is reported loudly.
+
+Stability AI's `generative-models` (the SV4D/SP4D code behind MorphGS: Preprocess Video) is
+cloned into the bundled MorphGS tree because MorphGS imports its `scripts/` helpers from a
+checkout, not from an installed package. There is deliberately no node that downloads the
+SV4D/SP4D checkpoint: download it from Hugging Face (stabilityai/sv4d2.0 or stabilityai/sp4d)
+into ComfyUI's models/sv4d folder, the same way every other checkpoint is handled. The example
+workflow declares those files in its node metadata, so ComfyUI's own missing-models dialog
+offers the download link when the workflow is loaded.
+
+Blender is a separate system binary (used only by this package's own rig conversion and export
+scripts, never by MorphGS itself) and is not installed here. Put `blender` 4.2+ on PATH or set
+MORPHGS_BLENDER_BIN.
 """
 import os
 import shutil
@@ -48,8 +45,18 @@ import sys
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 MORPHGS_SRC = os.path.join(PACKAGE_DIR, "morphgs_src")
+REQUIREMENTS = os.path.join(PACKAGE_DIR, "requirements.txt")
 
-REQUIRED_CUDA = "11.8"
+# PEP 503 index of prebuilt CUDA wheels. Wheels are tagged with a local version such as
+# `1.5.3+cu130torch2.10`, so an exact `==` pin selects the build for one torch/CUDA pair.
+CUDA_WHEEL_INDEX = "https://pozzettiandrea.github.io/cuda-wheels/v2/"
+
+# Versions this package's vendored MorphGS source is written against. gsplat's rasterization
+# API and pytorch3d's renderer are both used directly by morphgs_src; bump deliberately.
+PYTORCH3D_VERSION = "0.7.9"
+GSPLAT_VERSION = "1.5.3"
+
+GENERATIVE_MODELS_DIR = os.path.join(MORPHGS_SRC, "src", "extlibs", "generative-models")
 
 
 def log(msg):
@@ -58,12 +65,9 @@ def log(msg):
 
 def run(cmd, **kwargs):
     log("$ " + " ".join(cmd))
-    # Pin cwd to this package's own directory (guaranteed to exist -- this file is running
-    # from inside it) rather than silently inheriting whatever working directory the calling
-    # shell happens to have. Confirmed in practice: pip's own __main__.py calls os.getcwd() on
-    # startup and crashes with a bare FileNotFoundError if the *caller's* cwd has been deleted/
-    # replaced out from under it (e.g. something else -- Manager, a concurrent git operation --
-    # modifying this same directory while install.py runs by hand from a shell sitting in it).
+    # Pin cwd to this package's own directory: pip calls os.getcwd() on startup and crashes
+    # with a bare FileNotFoundError if the caller's cwd has vanished underneath it (seen when
+    # Manager rewrites this directory while install.py runs from a shell inside it).
     kwargs.setdefault("cwd", PACKAGE_DIR)
     subprocess.run(cmd, check=True, **kwargs)
 
@@ -72,93 +76,32 @@ def pip_install(*args, **kwargs):
     run([sys.executable, "-m", "pip", "install", *args], **kwargs)
 
 
-def check_cuda_toolkit():
-    """MorphGS's pytorch3d and its two custom CUDA extensions all compile from source at
-    install time and need a matching CUDA toolkit's nvcc present -- fail clearly here rather
-    than deep inside an opaque pip build error."""
-    nvcc = shutil.which("nvcc")
-    if nvcc is None:
-        for candidate in (f"/usr/local/cuda-{REQUIRED_CUDA}/bin/nvcc", "/usr/local/cuda/bin/nvcc"):
-            if os.path.isfile(candidate):
-                nvcc = candidate
-                break
-    if nvcc is None:
-        raise RuntimeError(
-            f"CUDA {REQUIRED_CUDA} toolkit (nvcc) not found. pytorch3d and MorphGS's own "
-            f"compiled CUDA extensions (simple_knn, diff_gaussian_rasterization) need to "
-            f"build from source against it. Install the CUDA {REQUIRED_CUDA} toolkit (e.g. "
-            f"`apt install cuda-toolkit-11-8`, or NVIDIA's own installer) and re-run this "
-            f"script."
-        )
-    out = subprocess.run([nvcc, "--version"], capture_output=True, text=True).stdout
-    log(f"Found nvcc at {nvcc}:\n{out.strip()}")
-    if REQUIRED_CUDA not in out:
-        log(
-            f"WARNING: nvcc reports a version other than {REQUIRED_CUDA} -- MorphGS's compiled "
-            f"extensions are only confirmed working against CUDA {REQUIRED_CUDA}. Continuing, "
-            f"but build failures below may trace back to this mismatch."
-        )
-    return nvcc
+def _python_subprocess(code, env=None):
+    """(returncode, combined output) of running `code` in a fresh interpreter.
+
+    A broken native package can kill the interpreter outright rather than raise (seen in
+    practice: "Intel oneMKL FATAL ERROR: Cannot load libtorch_cpu.so"), so every probe in this
+    script runs out-of-process where that cannot take the installer down with it."""
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=PACKAGE_DIR, env=env,
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-def installed_torch_version():
-    """torch's version string (e.g. "2.10.0+cu130") read from installed package METADATA --
-    never by importing torch. A broken torch install can kill the interpreter outright with a
-    fatal native error rather than a catchable Python exception (confirmed in practice: "Intel
-    oneMKL FATAL ERROR: Cannot load libtorch_cpu.so" ended install.py on the spot), which would
-    take the installer down before it could diagnose or repair anything."""
+def installed_version(package):
+    """Installed version string from package metadata, or None. Never imports the package."""
     try:
         from importlib.metadata import version
 
-        return version("torch")
+        return version(package)
     except Exception:
         return None
-
-
-def probe_torch():
-    """(ok, cuda_version, output) from importing torch in a FRESH SUBPROCESS, so a torch
-    install that crashes on import can't take install.py down with it (see
-    installed_torch_version). cuda_version is torch.version.cuda ("13.0", "11.8", or None for
-    a CPU build) and is only meaningful when ok is True."""
-    probe = "import torch; print('CUDA_VERSION=' + str(torch.version.cuda))"
-    proc = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
-    )
-    output = (proc.stdout + proc.stderr).strip()
-    if proc.returncode != 0:
-        return False, None, output
-    cuda_version = None
-    for line in proc.stdout.splitlines():
-        if line.startswith("CUDA_VERSION="):
-            value = line.split("=", 1)[1].strip()
-            cuda_version = None if value in ("None", "") else value
-    return True, cuda_version, output
-
-
-def _parse_cuda_version(cuda_version):
-    """(major, minor) from a torch.version.cuda string: "13.0" -> (13, 0)."""
-    try:
-        major, minor = cuda_version.split(".")[:2]
-        return (int(major), int(minor))
-    except Exception:
-        return None
-
-
-def _cuda_from_version_string(raw):
-    """(major, minor) from a torch version's local suffix: "2.10.0+cu130" -> (13, 0),
-    "2.0.1+cu118" -> (11, 8). None when there's no +cuXXX suffix to read."""
-    if not raw or "+cu" not in raw:
-        return None
-    digits = "".join(c for c in raw.split("+cu", 1)[1] if c.isdigit())
-    if len(digits) < 3:
-        return None
-    return (int(digits[:-1]), int(digits[-1]))
 
 
 def _torch_release(raw):
-    """(major, minor) from a torch version string: "2.10.0+cu130" -> (2, 10), "2.0.1" -> (2, 0).
-    Compared as a tuple, never as a string -- "2.10" sorts BELOW "2.3" lexically."""
+    """(major, minor) from "2.10.0+cu130" -> (2, 10). Tuples, never strings: "2.10" < "2.3"
+    lexically."""
     if not raw:
         return None
     parts = raw.split("+", 1)[0].split(".")
@@ -168,456 +111,424 @@ def _torch_release(raw):
         return None
 
 
-# torch builds from 2.3 onward are compiled against the numpy 2.x ABI; MorphGS's original
-# pinned stack (torch 2.0.1) predates that and needs numpy<2.
+def _cuda_release(raw):
+    """(major, minor) from torch.version.cuda: "13.0" -> (13, 0). None for CPU/ROCm builds."""
+    if not raw:
+        return None
+    try:
+        major, minor = raw.split(".")[:2]
+        return (int(major), int(minor))
+    except ValueError:
+        return None
+
+
+def probe_torch():
+    """(torch_version, cuda_version) as reported by the torch ComfyUI is actually running on.
+
+    torch is a hard prerequisite owned by ComfyUI itself, so a missing or broken torch is
+    reported and left alone -- this script never installs or replaces it."""
+    code = (
+        "import torch\n"
+        "print('TORCH_VERSION=' + torch.__version__)\n"
+        "print('CUDA_VERSION=' + str(torch.version.cuda))\n"
+    )
+    rc, output = _python_subprocess(code)
+    if rc != 0:
+        raise RuntimeError(
+            "torch is not importable in this environment:\n" + output + "\n\n"
+            "ComfyUI provides torch; this package never installs it. Fix ComfyUI's own torch "
+            "install first (a numpy-major-version mismatch is the usual cause), then re-run "
+            "install.py."
+        )
+    values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    torch_version = values.get("TORCH_VERSION")
+    cuda_version = values.get("CUDA_VERSION")
+    if cuda_version in ("None", ""):
+        cuda_version = None
+    log(f"torch {torch_version}, CUDA build {cuda_version or 'none (CPU/ROCm build)'}")
+    return torch_version, cuda_version
+
+
+def cuda_wheel_tag(torch_version, cuda_version):
+    """Local-version tag the cuda-wheels index uses for this torch/CUDA pair, e.g.
+    "cu130torch2.10". None when there is no CUDA build to match."""
+    release = _torch_release(torch_version)
+    cuda = _cuda_release(cuda_version)
+    if release is None or cuda is None:
+        return None
+    return f"cu{cuda[0]}{cuda[1]}torch{release[0]}.{release[1]}"
+
+
+# ---------------------------------------------------------------------------------------------
+# numpy
+# ---------------------------------------------------------------------------------------------
+
+# torch builds from 2.3 onward are compiled against the numpy 2.x ABI; older ones need numpy<2.
 _NUMPY2_MIN_TORCH = (2, 3)
 
 
 def ensure_numpy_matching_torch():
-    """numpy<2 is the correct pin for MorphGS's ORIGINAL torch 2.0.1 stack -- numpy 2.x silently
-    broke torch.from_numpy/pytorch3d there, hit once already during this project. But it is
-    actively WRONG on a modern torch build compiled against the numpy 2.x ABI: confirmed in
-    practice that forcing numpy<2 alongside torch 2.10 left `import torch` dying with "Intel
-    oneMKL FATAL ERROR: Cannot load libtorch_cpu.so". So the pin follows whichever torch
-    release is actually installed rather than being hardcoded in either direction."""
-    raw = installed_torch_version()
+    """Keep numpy on the major version the installed torch was built against.
+
+    Both directions have bitten in practice: numpy 2.x under torch 2.0 broke
+    torch.from_numpy/pytorch3d, and numpy<2 under torch 2.10 left `import torch` dying with
+    "Intel oneMKL FATAL ERROR: Cannot load libtorch_cpu.so". Some transitive requirements
+    (generative-models pins numpy==2.1) move numpy as a side effect, so this runs after them."""
+    raw = installed_version("torch")
     release = _torch_release(raw)
     if release is not None and release >= _NUMPY2_MIN_TORCH:
-        log(
-            f"torch {raw} is built against the numpy 2.x ABI -- keeping numpy>=2 to match it. "
-            f"NOT pinning numpy<2, which is only correct for MorphGS's original torch 2.0.x "
-            f"stack and breaks a modern torch's own native libraries."
-        )
         pip_install("numpy>=2")
-        return
-    log(f"Pinning numpy<2 to match MorphGS's legacy torch stack (installed torch: {raw}).")
-    pip_install("numpy<2")
+    else:
+        log(f"torch {raw} predates the numpy 2 ABI -- pinning numpy<2 to match it.")
+        pip_install("numpy<2")
 
 
-def ensure_torch():
-    raw = installed_torch_version()
-    parsed = _cuda_from_version_string(raw)
+# ---------------------------------------------------------------------------------------------
+# Pure-Python requirements
+# ---------------------------------------------------------------------------------------------
 
-    if raw:
-        log(f"Existing torch: {raw}")
-        ok, runtime_cuda, output = probe_torch()
-        if not ok:
-            log(
-                f"torch {raw} is installed but fails to import:\n{output}\n"
-                f"This is most often a numpy ABI mismatch (numpy pinned below 2 against a torch "
-                f"built for numpy 2.x). Attempting to repair by aligning numpy to this torch build."
-            )
-            ensure_numpy_matching_torch()
-            ok, runtime_cuda, output = probe_torch()
-            if not ok:
-                raise RuntimeError(
-                    f"torch {raw} is installed but still fails to import after aligning numpy:\n"
-                    f"{output}\n\nNothing further this script can do automatically -- the torch "
-                    f"install itself is broken and needs reinstalling for this environment."
-                )
-            log("torch imports cleanly after aligning numpy.")
-        # torch.version.cuda is authoritative; the +cuXXX version suffix is only a fallback for
-        # when torch can't be imported at all (a PyPI-default torch build carries no suffix).
-        if runtime_cuda:
-            parsed = _parse_cuda_version(runtime_cuda) or parsed
-        log(f"torch CUDA build: {runtime_cuda or 'none (CPU build)'}")
+def pip_install_requirements_file(path, env=None):
+    """Install a requirements file one line at a time and return the lines that failed.
 
-    if parsed == (11, 8):
-        log("Existing torch is already a CUDA 11.8 build -- leaving it as-is, no reinstall needed.")
-        return
+    A bulk `pip install -r` is one transaction: a single unbuildable pin aborts every other
+    package in the file. One line at a time, one bad pin costs one package, and the caller can
+    say which."""
+    failed = []
+    if not os.path.isfile(path):
+        return failed
+    with open(path) as f:
+        lines = [line.split("#", 1)[0].strip() for line in f]
+    for line in lines:
+        if not line or line.startswith("-"):
+            continue
+        try:
+            pip_install(line, env=env)
+        except subprocess.CalledProcessError:
+            log(f"WARNING: failed to install '{line}' from {os.path.basename(path)} -- continuing.")
+            failed.append(line)
+    return failed
 
-    if parsed is not None and parsed > (11, 8):
-        # Two real, separate reasons a forced downgrade to torch==2.0.1+cu118 is actively wrong
-        # here, not just unnecessary: (1) PyTorch's own cu118 wheel index has since dropped that
-        # exact version for newer Python builds (confirmed: "Could not find a version that
-        # satisfies the requirement torch==2.0.1" against a real cu118 index listing only
-        # 2.2.0+ upward) -- it may simply no longer be installable at all on a current Python.
-        # (2) CUDA 11.8 has no support for newer GPU architectures at all (e.g. NVIDIA
-        # Blackwell/RTX 50-series) -- even if the install somehow succeeded, it could not
-        # actually run a single kernel on hardware newer than what CUDA 11.8 knows about. So:
-        # leave torch alone and try building pytorch3d/gsplat/MorphGS's own CUDA extensions
-        # against whatever newer stack is already here instead. This is NOT the combination
-        # MorphGS was originally built/tested against -- a build or runtime failure below may
-        # trace back to this newer CUDA/torch version rather than to a missing dependency.
+
+def ensure_requirements():
+    """Manager already installed requirements.txt before running this script; re-running it
+    here only matters for a manual `git clone` install, and costs nothing when everything is
+    already satisfied."""
+    failed = pip_install_requirements_file(REQUIREMENTS)
+    if failed:
         log(
-            f"Existing torch is CUDA {parsed[0]}.{parsed[1]}, newer than the CUDA 11.8 build MorphGS's "
-            f"compiled extensions were originally built against. NOT forcing a downgrade to "
-            f"torch==2.0.1+cu118: that exact version is no longer available from PyTorch's own "
-            f"cu118 index for newer Python builds, and CUDA 11.8 doesn't support newer GPU "
-            f"architectures (e.g. Blackwell/RTX 50-series) regardless. Leaving torch as-is and "
-            f"attempting to build against this newer stack instead -- untested territory for "
-            f"MorphGS's own CUDA extensions, so a failure below may trace back to this version "
-            f"gap, not a missing dependency."
+            f"WARNING: {len(failed)} package(s) from requirements.txt did not install: "
+            f"{', '.join(failed)}. A pipeline step that needs one of them will say so."
         )
-        return
 
-    log(
-        "Existing torch (if any) is not a CUDA 11.8 build. Installing torch==2.0.1+cu118 / "
-        "torchvision==0.15.2+cu118 to match what MorphGS's compiled extensions need. This "
-        "REPLACES your current torch install -- only proceed if this ComfyUI instance is "
-        "dedicated to running this pipeline."
-    )
-    pip_install(
-        "torch==2.0.1", "torchvision==0.15.2",
-        "--index-url", "https://download.pytorch.org/whl/cu118",
-    )
+
+def ensure_rembg_backend():
+    """rembg (used by this package's own mask_video.py) needs an onnxruntime backend; a bare
+    `pip install rembg` succeeds and then fails at first use with "No onnxruntime backend
+    found". requirements.txt asks for rembg[cpu]; this is the explicit guarantee."""
+    rc, _ = _python_subprocess("import onnxruntime")
+    if rc == 0:
+        return
+    pip_install("rembg[cpu]")
+
+
+def ensure_setuptools():
+    """generative-models' pytorch_lightning dependency still imports the legacy
+    `pkg_resources`, which setuptools removed in v81. Pin back only when it is missing."""
+    rc, _ = _python_subprocess("import pkg_resources")
+    if rc == 0:
+        return
+    log("pkg_resources is missing (setuptools >= 81 no longer ships it); pinning setuptools<81.")
+    pip_install("setuptools<81")
+    rc, _ = _python_subprocess("import pkg_resources")
+    if rc != 0:
+        raise RuntimeError(
+            "pkg_resources is still missing after installing setuptools<81. "
+            "MorphGS: Preprocess Video cannot import generative-models without it."
+        )
+
+
+# ---------------------------------------------------------------------------------------------
+# Compiled CUDA packages: prebuilt wheels first, source build only as a fallback
+# ---------------------------------------------------------------------------------------------
+
+def _install_prebuilt(package, version, tag):
+    """Install `package==version+tag` from the cuda-wheels index. False when no such wheel
+    exists for this Python/torch/CUDA/OS combination."""
+    target = f"{version}+{tag}"
+    if installed_version(package) == target:
+        log(f"{package} {target} already installed.")
+        return True
+    try:
+        pip_install(f"{package}=={target}", "--extra-index-url", CUDA_WHEEL_INDEX)
+    except subprocess.CalledProcessError:
+        return False
+    return installed_version(package) == target
+
+
+def _import_ok(module):
+    rc, _ = _python_subprocess(f"import {module}")
+    return rc == 0
 
 
 def nvidia_pip_cuda_dirs():
-    """When torch's own CUDA support comes from pip-installed `nvidia-*` wheels instead of a
-    full system CUDA toolkit (normal for modern torch/CUDA 12+/13 installs), the actual CUDA
-    headers/libs needed to compile a NEW CUDA extension (pytorch3d, MorphGS's own two
-    extensions) can live inside site-packages instead of /usr/local/cuda -- confirmed in
-    practice: `cusparse.h` existed only at .../site-packages/nvidia/cu13/include/cusparse.h,
-    invisible to a build that only searches /usr/local/cuda/include, causing a "fatal error:
-    cusparse.h: No such file or directory" that has nothing to do with a missing dependency.
-    Collected dynamically (works for both the older per-library nvidia-cusparse-cuXX/
-    nvidia-cublas-cuXX layout and the newer consolidated nvidia-cu13-style layout) rather than
-    hardcoding a path, since the exact venv/CUDA version varies per machine."""
+    """include/ and lib/ directories contributed by pip-installed nvidia-* wheels. Only relevant
+    to the source-build fallback: on a pip-CUDA torch install, e.g. cusparse.h exists only
+    inside site-packages/nvidia/. `nvidia` is a PEP 420 namespace package -- __path__ only."""
     try:
         import nvidia
     except ImportError:
         return [], []
-    # `nvidia` is a PEP 420 namespace package (no single __init__.py, contributed to by each
-    # separately-installed nvidia-* wheel) -- it has no meaningful __file__ (that's None, which
-    # is exactly what broke this the first time), only __path__, an iterable of every
-    # contributing directory.
-    bases = list(getattr(nvidia, "__path__", []) or [])
-    if not bases:
-        nvidia_file = getattr(nvidia, "__file__", None)
-        if nvidia_file:
-            bases = [os.path.dirname(nvidia_file)]
     include_dirs, lib_dirs = [], []
-    for base in bases:
+    for base in list(getattr(nvidia, "__path__", []) or []):
         if not os.path.isdir(base):
             continue
-        for name in os.listdir(base):
-            subdir = os.path.join(base, name)
-            inc = os.path.join(subdir, "include")
-            lib = os.path.join(subdir, "lib")
-            if os.path.isdir(inc):
-                include_dirs.append(inc)
-            if os.path.isdir(lib):
-                lib_dirs.append(lib)
+        for name in sorted(os.listdir(base)):
+            for kind, collected in (("include", include_dirs), ("lib", lib_dirs)):
+                candidate = os.path.join(base, name, kind)
+                if os.path.isdir(candidate):
+                    collected.append(candidate)
     return include_dirs, lib_dirs
 
 
+def cuda_toolkit_include_dirs():
+    """Header directories of the toolkit whose nvcc will compile a source build, listed AHEAD
+    of any pip-wheel headers so cuda.h and the CCCL tree come from the same toolkit as nvcc.
+    CUDA 12 keeps them in include/; CUDA 13 moved them under targets/<arch>/include."""
+    nvcc = shutil.which("nvcc")
+    roots = [r for r in (os.environ.get("CUDA_HOME"), os.environ.get("CUDA_PATH")) if r]
+    if nvcc:
+        roots.append(os.path.dirname(os.path.dirname(os.path.realpath(nvcc))))
+    roots.append("/usr/local/cuda")
+    dirs = []
+    for root in roots:
+        targets = os.path.join(root, "targets")
+        candidates = [os.path.join(root, "include")]
+        if os.path.isdir(targets):
+            candidates += [os.path.join(targets, a, "include") for a in sorted(os.listdir(targets))]
+        for candidate in candidates:
+            if os.path.isdir(candidate) and candidate not in dirs:
+                dirs.append(candidate)
+    return dirs
+
+
 def _cuda_build_env():
-    """Extra CPATH/LIBRARY_PATH/LD_LIBRARY_PATH so compiling a CUDA extension can find
-    headers/libs bundled inside pip-installed nvidia-* wheels (see nvidia_pip_cuda_dirs).
-    Returns None (== inherit the current environment unchanged) when there's nothing to add."""
-    include_dirs, lib_dirs = nvidia_pip_cuda_dirs()
-    if not include_dirs and not lib_dirs:
-        return None
+    """Environment for compiling a CUDA extension from source (fallback path only).
+
+    CPATH is searched like -I, i.e. before the `-isystem $CUDA_HOME/include` torch's build
+    passes, so the toolkit's headers go first and pip-wheel headers (which track torch's CUDA,
+    not the toolkit's) stay behind them. Mixing the two is what CCCL rejects with "CUDA
+    compiler and CUDA toolkit headers are incompatible"."""
+    pip_include_dirs, lib_dirs = nvidia_pip_cuda_dirs()
+    include_dirs = cuda_toolkit_include_dirs() + pip_include_dirs
     env = os.environ.copy()
     if include_dirs:
         env["CPATH"] = os.pathsep.join([*include_dirs, env.get("CPATH", "")]).rstrip(os.pathsep)
     if lib_dirs:
-        joined = os.pathsep.join([*lib_dirs, env.get("LIBRARY_PATH", "")]).rstrip(os.pathsep)
-        env["LIBRARY_PATH"] = joined
+        env["LIBRARY_PATH"] = os.pathsep.join([*lib_dirs, env.get("LIBRARY_PATH", "")]).rstrip(os.pathsep)
         env["LD_LIBRARY_PATH"] = os.pathsep.join([*lib_dirs, env.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
     return env
 
 
-def ensure_pytorch3d():
-    try:
-        import pytorch3d  # noqa: F401
-        log(f"pytorch3d already installed ({pytorch3d.__version__}), skipping.")
-        return
-    except ImportError:
-        pass
-    # pytorch3d's own setup.py needs `import torch` to succeed *during the build itself* (to
-    # pick CUDA extension settings) -- pip's default build isolation runs that step in a
-    # throwaway env that does NOT include this environment's already-installed torch, causing
-    # a "ModuleNotFoundError: No module named 'torch'" failure even though torch is right
-    # there. --no-build-isolation is pytorch3d's own documented install method for exactly
-    # this reason (same as MorphGS's own two CUDA extensions below, which already use it).
+def require_nvcc():
+    nvcc = shutil.which("nvcc")
+    if nvcc is None:
+        for candidate in ("/usr/local/cuda/bin/nvcc",):
+            if os.path.isfile(candidate):
+                nvcc = candidate
+    if nvcc is None:
+        raise RuntimeError(
+            "No prebuilt pytorch3d/gsplat wheel exists for this torch/CUDA combination, and "
+            "building from source needs the CUDA toolkit's nvcc, which is not installed. "
+            "Either install a CUDA toolkit matching torch's CUDA version, or run ComfyUI on a "
+            f"torch build the prebuilt index covers ({CUDA_WHEEL_INDEX}: torch 2.4-2.13 with "
+            "CUDA 12.4-13.2)."
+        )
+    out = subprocess.run([nvcc, "--version"], capture_output=True, text=True).stdout
+    log(f"Source build: using nvcc at {nvcc}\n{out.strip()}")
+
+
+def _build_pytorch3d_from_source():
+    # pytorch3d's setup.py imports torch during the build itself; pip's isolated build env
+    # would not contain it, hence --no-build-isolation (pytorch3d's own documented method).
     pip_install(
         "git+https://github.com/facebookresearch/pytorch3d.git", "--no-build-isolation",
         env=_cuda_build_env(),
     )
 
 
-def pip_install_requirements_file(path, env=None):
-    """Installs each line of a requirements file as its own separate pip call, not one bulk
-    `pip install -r file` -- that treats the whole file as one transaction, so a single
-    unsatisfiable/unbuildable pin can abort the WHOLE call, taking every other package in the
-    file down with it. Confirmed in practice twice: MorphGS's own requirements.txt mixes
-    simple, reliable packages (trimesh, numpy, tqdm...) with fragile, binary-heavy ones
-    (open3d, pymeshlab, pykeops, scikit-sparse) -- trimesh silently never got installed this
-    way, surfacing later as an opaque ModuleNotFoundError deep inside preprocess_tgt.py instead
-    of a clear message here. Then Stability AI's own generative-models/requirements/pt2.txt hit
-    the same thing: it pins triton==2.0.0, which has no build for a current Python at all,
-    aborting that entire install too. Installing one line at a time means one bad pin only
-    costs that one package; returns the list of lines that failed so the caller can report
-    them instead of the failure staying silent."""
-    failed = []
-    if not os.path.isfile(path):
-        return failed
-    with open(path) as f:
-        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-    for line in lines:
-        try:
-            pip_install(line, env=env)
-        except subprocess.CalledProcessError:
-            log(f"WARNING: failed to install '{line}' from {path} -- continuing with the rest.")
-            failed.append(line)
-    return failed
+def _build_gsplat_from_source():
+    # The PyPI sdist ships no kernels; gsplat JIT-compiles them on first import of its CUDA
+    # backend. Doing that import here turns a mid-training build failure into an install-time
+    # one and leaves the compiled extension cached.
+    pip_install(f"gsplat=={GSPLAT_VERSION}")
+    log("Compiling gsplat's CUDA kernels (this takes several minutes)...")
+    rc, output = _python_subprocess("from gsplat.cuda._backend import _C", env=_cuda_build_env())
+    if rc != 0:
+        raise RuntimeError("gsplat's CUDA kernels failed to build:\n" + output)
 
 
-def ensure_morphgs_requirements():
-    requirements_path = os.path.join(MORPHGS_SRC, "requirements.txt")
-    failed = pip_install_requirements_file(requirements_path)
-    # requirements.txt lists a bare `numpy`, so installing it can pull in whichever major
-    # version pip prefers -- realign it to whatever the installed torch was actually built
-    # against (see ensure_numpy_matching_torch; the right answer differs per torch generation).
-    ensure_numpy_matching_torch()
-    if failed:
-        log(
-            f"WARNING: {len(failed)} package(s) from requirements.txt failed to install: "
-            f"{', '.join(failed)}. Install these by hand (e.g. `pip install open3d`) if a "
-            f"pipeline step later complains one of them is missing."
-        )
+def ensure_compiled_packages(torch_version, cuda_version):
+    tag = cuda_wheel_tag(torch_version, cuda_version)
+    wanted = [("pytorch3d", PYTORCH3D_VERSION, _build_pytorch3d_from_source),
+              ("gsplat", GSPLAT_VERSION, _build_gsplat_from_source)]
+    needs_source = []
 
+    if tag is None:
+        log("torch has no CUDA build here; MorphGS needs CUDA for training and rendering.")
+        needs_source = wanted
+    else:
+        log(f"Resolving prebuilt CUDA wheels tagged +{tag} from {CUDA_WHEEL_INDEX}")
+        for package, version, build in wanted:
+            if _install_prebuilt(package, version, tag):
+                continue
+            if _import_ok(package):
+                log(
+                    f"No prebuilt {package} wheel for +{tag}; keeping the already-installed "
+                    f"{package} {installed_version(package)} since it imports."
+                )
+                continue
+            needs_source.append((package, version, build))
 
-def ensure_rembg_backend():
-    """rembg (used by this package's own mask_video.py, not a MorphGS dependency) has no
-    built-in inference engine -- plain `pip install rembg` installs successfully but fails at
-    runtime with "No onnxruntime backend found" the first time it's actually used. It needs
-    the `[cpu]` or `[gpu]` extra to pull in onnxruntime. requirements.txt/pyproject.toml
-    already specify rembg[cpu], but this is a second, explicit guarantee in case a given
-    ComfyUI Manager version doesn't re-run a node's requirements.txt on update, only on first
-    install."""
-    try:
-        import onnxruntime  # noqa: F401
-
-        log("onnxruntime already installed, rembg has a working backend.")
+    if not needs_source:
         return
-    except ImportError:
-        pass
-    pip_install("rembg[cpu]")
+    log(
+        "Falling back to building from source for: "
+        + ", ".join(p for p, _, _ in needs_source)
+        + ". This is the slow path and needs a CUDA toolkit."
+    )
+    require_nvcc()
+    for package, _, build in needs_source:
+        build()
 
 
-def ensure_gsplat():
-    try:
-        import gsplat
-        log(f"gsplat already installed ({gsplat.__version__}), skipping.")
-        return
-    except ImportError:
-        pass
-    pip_install("gsplat==1.5.3")
-
+# ---------------------------------------------------------------------------------------------
+# MorphGS source + SV4D code
+# ---------------------------------------------------------------------------------------------
 
 def ensure_morphgs_source():
     if not os.path.isdir(MORPHGS_SRC):
         raise RuntimeError(
-            f"{MORPHGS_SRC} not found. MorphGS's source ships bundled with this package -- "
-            f"if it's missing, re-install ComfyUI-MorphGS (git clone or reinstall via Manager)."
+            f"{MORPHGS_SRC} not found. MorphGS's source ships inside this package; re-install "
+            f"ComfyUI-MorphGS (git clone or reinstall via Manager)."
         )
-    log(f"Using bundled MorphGS source at {MORPHGS_SRC}")
+    log(f"Bundled MorphGS source: {MORPHGS_SRC}")
 
 
-def ensure_cuda_extensions():
-    cuda_env = _cuda_build_env()  # see nvidia_pip_cuda_dirs -- same header/lib gap as pytorch3d
-    for name, subdir in [
-        ("diff_gaussian_rasterization", "latent-gaussian-rasterization"),
-        ("simple_knn", "simple-knn"),
-    ]:
-        try:
-            __import__(name)
-            log(f"{name} already installed, skipping.")
-            continue
-        except ImportError:
-            pass
-        ext_dir = os.path.join(MORPHGS_SRC, "src", "extlibs", subdir)
-        pip_install("-e", ext_dir, "--no-build-isolation", env=cuda_env)
-
-
-GENERATIVE_MODELS_DIR = os.path.join(MORPHGS_SRC, "src", "extlibs", "generative-models")
+# What SV4D/SP4D inference actually imports from Stability's `sgm` package and its sv4d demo
+# helpers (checked against the sp4d branch: sgm.models, sgm.util, sgm.modules.encoders,
+# scripts/demo/sv4d_helpers.py, scripts/util/detection). generative-models' own
+# requirements/pt2.txt is NOT used: it is a frozen dev-box snapshot that pins torch,
+# torchvision, xformers, an ancient transformers==4.19.1, opencv-python==4.6 and numpy==2.1,
+# and installing it into a shared ComfyUI environment breaks other nodes. Unpinned on purpose
+# (Manager's guidance: never more restrictive than needed).
+SGM_RUNTIME_REQUIREMENTS = [
+    "pytorch-lightning",
+    "open-clip-torch",
+    "transformers",
+    "kornia",
+    "safetensors",
+    "fsspec",
+    "packaging",
+    "clip @ git+https://github.com/openai/CLIP.git",
+]
 
 
 def ensure_generative_models():
-    """MorphGS: Preprocess Video needs Stability AI's `generative-models` (SGM) code importable
-    to run SV4D/SP4D -- a checkpoint file alone isn't enough, and there's no ComfyUI-native
-    architecture for it to load through instead (see this file's module docstring). Installed
-    once here, automatically, same as every other dependency -- not a separate manual step."""
-    if os.path.isdir(os.path.join(GENERATIVE_MODELS_DIR, ".git")):
-        log(f"{GENERATIVE_MODELS_DIR} already exists, skipping clone.")
-        return
-    run(["git", "clone", "--branch", "sp4d", "--depth", "1",
-         "https://github.com/Stability-AI/generative-models.git", GENERATIVE_MODELS_DIR])
-    # Per-package, not a bulk `pip install -r pt2.txt` -- that file pins triton==2.0.0, which
-    # has no build for a current Python at all, and a bulk install aborts entirely over that
-    # one line (see pip_install_requirements_file's docstring). triton accelerates certain
-    # fused kernels; SV4D/SP4D's core inference path this package actually needs doesn't
-    # depend on it being present.
-    failed = pip_install_requirements_file(os.path.join(GENERATIVE_MODELS_DIR, "requirements", "pt2.txt"))
+    """Stability AI's generative-models, branch sp4d, as a plain checkout inside the bundled
+    MorphGS tree. MorphGS's preprocess_src.py puts that directory on sys.path itself and
+    imports both `sgm` and the repo's `scripts/demo/sv4d_helpers` from it (the latter is not
+    part of any installable package), so the checkout is the install -- nothing is pip
+    installed from it, only the runtime dependencies above."""
+    if not os.path.isdir(os.path.join(GENERATIVE_MODELS_DIR, ".git")):
+        run(["git", "clone", "--branch", "sp4d", "--depth", "1",
+             "https://github.com/Stability-AI/generative-models.git", GENERATIVE_MODELS_DIR])
+    else:
+        log(f"generative-models already present at {GENERATIVE_MODELS_DIR}")
+    failed = []
+    for spec in SGM_RUNTIME_REQUIREMENTS:
+        try:
+            pip_install(spec)
+        except subprocess.CalledProcessError:
+            failed.append(spec)
     if failed:
         log(
-            f"WARNING: {len(failed)} package(s) from generative-models' own requirements failed "
-            f"to install: {', '.join(failed)}. Continuing -- these are usually optional "
-            f"acceleration extras (e.g. triton), not required for SV4D/SP4D's core inference "
-            f"path Preprocess Video actually uses."
+            f"WARNING: could not install {', '.join(failed)}. MorphGS: Preprocess Video imports "
+            f"these; install them by hand before running it."
         )
-    pip_install("-e", GENERATIVE_MODELS_DIR)
-    pip_install("-e", "git+https://github.com/Stability-AI/datapipelines.git@main#egg=sdata")
-    # generative-models' own requirements pin numpy==2.1, which is wrong for the legacy cu118
-    # stack -- realign to whatever the installed torch was actually built against, rather than
-    # assuming either direction (see ensure_numpy_matching_torch). verify() re-checks it held.
-    ensure_numpy_matching_torch()
 
 
-# Packages whose compiled extensions link against numpy's C ABI. If numpy's major version
-# changes underneath them they keep "working" as far as pip is concerned but fail at import
-# with "module compiled against ABI version 0x1000009 but this version of numpy is 0x2000000"
-# / "numpy.core.multiarray failed to import" -- confirmed in practice with opencv-python, which
-# had been installed while numpy was (wrongly) pinned below 2 and stayed linked against the
-# numpy 1.x ABI after numpy was realigned back to 2.x.
+# ---------------------------------------------------------------------------------------------
+# Repair + verify
+# ---------------------------------------------------------------------------------------------
+
+# Packages whose compiled extensions link against numpy's C ABI. If numpy's major version moves
+# underneath them they fail at import with "module compiled against ABI version ... but this
+# version of numpy is ..." (seen with opencv-python).
 _NUMPY_ABI_SENSITIVE = [
     ("cv2", "opencv-python"),
     ("scipy", "scipy"),
     ("skimage", "scikit-image"),
-    ("sklearn", "scikit-learn"),
     ("matplotlib", "matplotlib"),
-    ("open3d", "open3d"),
-    ("pymeshlab", "pymeshlab"),
 ]
 
 
-def _import_check(module):
-    """(ok, output) for `import <module>` in a fresh subprocess."""
-    proc = subprocess.run(
-        [sys.executable, "-c", f"import {module}"],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
-    )
-    return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
-
-
 def repair_numpy_abi_mismatches():
-    """Force-reinstalls any package left linked against the wrong numpy ABI, so it picks up a
-    wheel built for the numpy actually installed now. Probes the real import rather than
-    tracking whether numpy changed during THIS run, because the environment may already have
-    been left inconsistent by an earlier run (exactly how this surfaced: cv2 broke only after
-    numpy was corrected, long after the install that mismatched it)."""
-    broken = []
     for module, package in _NUMPY_ABI_SENSITIVE:
-        ok, output = _import_check(module)
-        if ok:
-            continue
-        if "numpy" not in output.lower():
-            # Not installed at all, or failing for some unrelated reason -- either way not an
-            # ABI mismatch to repair here. Missing packages are already reported by
-            # ensure_morphgs_requirements.
+        rc, output = _python_subprocess(f"import {module}")
+        if rc == 0 or "numpy" not in output.lower():
             continue
         log(f"{module} fails to import against the installed numpy; reinstalling {package}.")
-        broken.append((module, package))
-
-    for module, package in broken:
         try:
             pip_install("--force-reinstall", "--no-cache-dir", package)
         except subprocess.CalledProcessError:
             log(f"WARNING: could not reinstall {package}.")
-    unresolved = [module for module, _ in broken if not _import_check(module)[0]]
-    if unresolved:
-        log(
-            f"WARNING: still failing to import after reinstall: {', '.join(unresolved)}. "
-            f"A pipeline step needing one of these will fail until it's resolved."
-        )
-    elif broken:
-        log("All numpy-ABI mismatches resolved.")
 
 
 def verify():
-    """Runs in a FRESH SUBPROCESS, for two reasons: this script's own process may hold stale
-    already-imported modules from before packages were reinstalled during this run (so an
-    in-process check can pass or fail for the wrong reasons), and a broken native library can
-    kill the interpreter outright rather than raising (see installed_torch_version)."""
-    script = (
-        "import numpy, torch, gsplat, pytorch3d\n"
+    code = (
+        "import numpy, torch, cv2, trimesh, gsplat, pytorch3d\n"
         "from pytorch3d.renderer import look_at_view_transform\n"
-        "import pkg_resources\n"
-        "import cv2\n"
-        "assert torch.from_numpy(numpy.zeros(3)) is not None, 'torch.from_numpy is broken'\n"
+        "from gsplat.cuda._backend import _C\n"
+        "assert torch.from_numpy(numpy.zeros(3)) is not None\n"
         "print(f'numpy {numpy.__version__}')\n"
-        "print(f'torch {torch.__version__} (CUDA build {torch.version.cuda}), "
-        "CUDA available: {torch.cuda.is_available()}')\n"
-        "print(f'gsplat {gsplat.__version__}')\n"
+        "print(f'torch {torch.__version__} (CUDA {torch.version.cuda}), "
+        "cuda available: {torch.cuda.is_available()}')\n"
         "print(f'pytorch3d {pytorch3d.__version__}')\n"
-        "print(f'cv2 {cv2.__version__}')\n"
+        "print(f'gsplat {gsplat.__version__}')\n"
         "print('CUDA_AVAILABLE=' + str(torch.cuda.is_available()))\n"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
-    )
-    output = (proc.stdout + proc.stderr).strip()
+    rc, output = _python_subprocess(code)
     log(output)
-    if proc.returncode != 0:
+    if rc != 0:
         raise RuntimeError(
-            f"Verification failed (exit {proc.returncode}). The environment is not usable as-is "
-            f"-- see the output above for which import or check broke."
+            "Verification failed -- see the output above for which import broke. The nodes "
+            "will not run until this is resolved."
         )
-    if "CUDA_AVAILABLE=True" not in proc.stdout:
-        log("WARNING: torch.cuda.is_available() is False -- training/rendering needs a GPU.")
+    if "CUDA_AVAILABLE=True" not in output:
+        log("WARNING: torch.cuda.is_available() is False -- training and rendering need a GPU.")
+    if shutil.which(os.environ.get("MORPHGS_BLENDER_BIN", "blender")) is None:
+        log(
+            "NOTE: no `blender` on PATH. MorphGS: Preprocess Character and Export Animated Mesh "
+            "need Blender 4.2+ (set MORPHGS_BLENDER_BIN if it lives elsewhere)."
+        )
     log("Verification passed.")
 
 
-def pkg_resources_available():
-    """Checked in a FRESH SUBPROCESS: this script's own interpreter may have already cached the
-    import state from before a pip install in the same run."""
-    proc = subprocess.run(
-        [sys.executable, "-c", "import pkg_resources"],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=PACKAGE_DIR,
-    )
-    return proc.returncode == 0
-
-
-def ensure_setuptools():
-    """Older dependencies pulled in by generative-models (pytorch_lightning ->
-    lightning_fabric, confirmed in practice) still rely on the legacy `pkg_resources`
-    namespace-package mechanism, failing with "ModuleNotFoundError: No module named
-    'pkg_resources'" without it.
-
-    pkg_resources ships inside setuptools, but setuptools REMOVED it in v81 -- so on a modern
-    environment `pip install setuptools` is worse than useless here: confirmed in practice that
-    setuptools 82.0.1 was already installed, pip reported "Requirement already satisfied", and
-    pkg_resources stayed missing regardless. The fix is a version pin back to the last series
-    that still ships it, and then actually verifying that worked rather than assuming."""
-    if pkg_resources_available():
-        log("pkg_resources already available, skipping.")
-        return
-    log(
-        "pkg_resources is missing (setuptools >= 81 no longer ships it). Pinning setuptools "
-        "back to the last series that still includes it."
-    )
-    pip_install("setuptools<81")
-    if not pkg_resources_available():
-        raise RuntimeError(
-            "pkg_resources is still missing after installing setuptools<81. generative-models' "
-            "own pytorch_lightning dependency needs it, so MorphGS: Preprocess Video cannot "
-            "work until it's importable."
-        )
-    log("pkg_resources is now available.")
-
-
 def main():
-    log(f"Installing MorphGS into this Python environment: {sys.executable}")
-    check_cuda_toolkit()
-    ensure_setuptools()
-    ensure_torch()
-    ensure_pytorch3d()
+    log(f"Environment: {sys.executable}")
     ensure_morphgs_source()
-    ensure_morphgs_requirements()
+    ensure_setuptools()
+    torch_version, cuda_version = probe_torch()
+    ensure_requirements()
     ensure_rembg_backend()
-    ensure_gsplat()
-    ensure_cuda_extensions()
+    ensure_compiled_packages(torch_version, cuda_version)
     ensure_generative_models()
+    ensure_numpy_matching_torch()
     repair_numpy_abi_mismatches()
     verify()
     log(
-        "Done. To use MorphGS: Preprocess Video, download an SV4D/SP4D checkpoint from Hugging "
-        "Face (stabilityai/sv4d2.0 or stabilityai/sp4d) and place it in your ComfyUI "
-        "models/sv4d folder."
+        "Done. For MorphGS: Preprocess Video, download an SV4D/SP4D checkpoint from Hugging "
+        "Face (stabilityai/sv4d2.0 or stabilityai/sp4d) into ComfyUI's models/sv4d folder."
     )
 
 

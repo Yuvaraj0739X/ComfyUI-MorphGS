@@ -21,22 +21,21 @@ Taeyeon Kim<sup>&ast;</sup>, Youngju Na<sup>&ast;</sup>, Jumin Lee, Sebin Lee, M
 
 ## Installation
 
+This copy is the one bundled inside
+[ComfyUI-MorphGS](https://github.com/Yuvaraj0739X/ComfyUI-MorphGS); its dependencies are
+installed by that package's `requirements.txt` + `install.py` (prebuilt `pytorch3d` and
+`gsplat` wheels matched to the running torch/CUDA build -- no CUDA toolkit needed). To use it
+standalone:
+
 ```bash
-conda create -n morphgs python=3.10 -y
-conda activate morphgs
-
-# PyTorch (CUDA 11.8)
-pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
-
-# PyTorch3D (see https://github.com/facebookresearch/pytorch3d for prebuilt wheels)
-pip install "git+https://github.com/facebookresearch/pytorch3d.git"
-
+# any CUDA build of torch 2.4+ (pick the +cuXXXtorchX.Y tag matching yours)
 pip install -r requirements.txt
-
-# CUDA extensions
-pip install -e src/extlibs/latent-gaussian-rasterization --no-build-isolation
-pip install -e src/extlibs/simple-knn --no-build-isolation
+pip install pytorch3d==0.7.9+cu130torch2.10 gsplat==1.5.3+cu130torch2.10     --extra-index-url https://pozzettiandrea.github.io/cuda-wheels/v2/
 ```
+
+Rendering uses gsplat (Apache-2.0) through `src/feature_splatting/gsplat_rasterizer.py`; the
+original non-commercial `diff-gaussian-rasterization` / `simple-knn` extensions are not used
+or shipped.
 
 Optional preprocessing components:
 
