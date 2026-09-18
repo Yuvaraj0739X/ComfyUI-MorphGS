@@ -58,6 +58,39 @@ DINOv2-only feature matching, gsplat rendering (Apache-2.0; the original non-com
 rasterizer is not used or bundled) and topology-aware ARAP regularization. Nothing else to
 clone or keep in sync.
 
+### Hardware and torch compatibility
+
+The nodes run wherever ComfyUI runs on an NVIDIA GPU with a CUDA build of torch that the
+prebuilt wheel index covers. `install.py` checks this and says exactly what to do when it
+doesn't hold.
+
+| Your ComfyUI torch build | RTX 50 (Blackwell, sm_120) | RTX 40 (Ada, sm_89) | RTX 30 (Ampere) | RTX 20 (Turing) |
+|---|---|---|---|---|
+| CUDA 12.8 / 12.9 / 13.0 / 13.2 | yes | yes | yes | gsplat yes; pytorch3d needs CUDA 12.8 (the 13.x wheel ships sm_80+ only) |
+| CUDA 12.4 / 12.6 | no (torch itself has no Blackwell kernels on these builds) | yes | yes | yes |
+| CUDA 11.8 / 12.1, or torch older than 2.4 | not covered by the prebuilt index: update torch (see below) | | | |
+| CPU-only, ROCm, Apple Silicon | not supported: training and rendering run CUDA kernels | | | |
+
+Kernel coverage above was read directly from the published wheels' fatbins, not from the
+index's description. An RTX 40 card runs the sm_86/sm_80 kernels in the CUDA 13 wheels (same
+major architecture); an RTX 50 card needs a CUDA 12.8+ torch, which is also what ComfyUI itself
+requires on that hardware.
+
+If your torch is outside the covered set, `install.py` prints the exact `pip install` line to
+move ComfyUI onto a current CUDA 12.8 torch build, and only then attempts a source build (which
+needs `nvcc` and a C++ compiler). Re-running the install (Manager → *Try fix* on this node)
+after any torch update re-resolves the matching wheels automatically.
+
+Platform notes:
+
+- **Windows** (including the portable build and ComfyUI Desktop): wheels exist for every
+  covered combination, and nothing here needs `git` — Stability's SV4D code is fetched as an
+  archive when `git` is absent. Manager runs `install.py` at the next ComfyUI start on Windows
+  (its normal deferred-install behaviour), so expect one restart. Blender is auto-detected in
+  `C:\Program Files\Blender Foundation\Blender x.y` if it's not on `PATH`.
+- **Linux** (bare, Docker, RunPod/Vast-style images): `apt-get install blender` is enough for
+  the Blender side; nothing needs a CUDA toolkit on the box.
+
 ### Configuration
 
 Only two environment variables, both optional:

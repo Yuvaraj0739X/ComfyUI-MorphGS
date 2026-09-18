@@ -215,8 +215,17 @@ def run_python(script_path: str, args: list, timeout: int = None, env: dict = No
 
 
 def run_blender_script(script_path: str, args: list, timeout: int = None) -> str:
+    blender = config.find_blender()
+    if blender is None or (not os.path.isfile(blender) and shutil.which(blender) is None):
+        raise RuntimeError(
+            "Blender not found. MorphGS: Preprocess Character and MorphGS: Export Animated Mesh "
+            "run Blender 4.2+ headlessly (--background). Install it and either put `blender` "
+            "on PATH or set MORPHGS_BLENDER_BIN to the executable "
+            "(e.g. C:/Program Files/Blender Foundation/Blender 4.5/blender.exe on "
+            "Windows, /usr/bin/blender after `apt-get install blender` on Linux)."
+        )
     proc = subprocess.run(
-        [config.BLENDER_BIN, "--background", "--python", script_path, "--", *[str(a) for a in args]],
+        [blender, "--background", "--python", script_path, "--", *[str(a) for a in args]],
         capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
     output = proc.stdout + proc.stderr
