@@ -73,7 +73,11 @@ def run(cmd, **kwargs):
 
 
 def pip_install(*args, **kwargs):
-    run([sys.executable, "-m", "pip", "install", *args], **kwargs)
+    # Managed GPU images run ComfyUI as root; pip's per-call root warning is noise there and
+    # drowns the lines that matter, so it is silenced through the environment.
+    env = dict(kwargs.pop("env", None) or os.environ)
+    env.setdefault("PIP_ROOT_USER_ACTION", "ignore")
+    run([sys.executable, "-m", "pip", "install", *args], env=env, **kwargs)
 
 
 def _python_subprocess(code, env=None):
