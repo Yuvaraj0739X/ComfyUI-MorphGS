@@ -44,7 +44,7 @@ Two things it can't do for you:
    box `apt-get install blender` is enough. Needed by **Preprocess Character** and **Export
    Animated Mesh**.
 2. **The SV4D/SP4D checkpoint**, if you'll use **Preprocess Video**. Download it from Hugging
-   Face into your ComfyUI `models/sv4d` folder (created automatically when the node loads):
+   Face into ComfyUI's standard `models/diffusion_models` folder:
    - `sv4d` / `sv4d2_8views` modes → [stabilityai/sv4d2.0](https://huggingface.co/stabilityai/sv4d2.0)
    - `sp4d` mode → [stabilityai/sp4d](https://huggingface.co/stabilityai/sp4d)
 
@@ -105,7 +105,7 @@ Only two environment variables, both optional:
 | Node | Does |
 |---|---|
 | **MorphGS: Preprocess Character** | `character_source_path` is a dropdown listing rigged `.fbx`/`.glb`/`.gltf` files **and** already-prepared character folders found under ComfyUI's own `input/` directory — drop your file there (the normal ComfyUI upload location) and pick it here, no manual path-typing. Accepts a rigged `.fbx` (e.g. Mixamo) or `.glb` (e.g. output from [SkinTokens](https://github.com/VAST-AI-Research/SkinTokens)/TokenRig, or any Blender-importable rigged mesh) and converts it into MorphGS's expected `mesh.obj` + RigNet-format rig, then runs MorphGS's target-side preprocessing (canonical-view rendering + feature extraction). |
-| **MorphGS: Preprocess Video** | `video_path` is likewise a dropdown of video files (`.mp4`/`.mov`/`.avi`/`.mkv`/`.webm`) found under `input/`. Segments the clip onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` is a real dropdown of SV4D/SP4D checkpoints found in your ComfyUI `models/sv4d` folder (also scans `models/checkpoints` and MorphGS's own `generative-models/checkpoints`) — not a fixed list — reflecting whatever checkpoint file you've actually downloaded and placed there. |
+| **MorphGS: Preprocess Video** | `video_path` is likewise a refreshable dropdown of video files (`.mp4`/`.mov`/`.avi`/`.mkv`/`.webm`) found under `input/`. Segments the clip onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` scans ComfyUI's standard `models/diffusion_models` folder first, with `models/sv4d`, `models/checkpoints`, and MorphGS's own `generative-models/checkpoints` as fallbacks. |
 | **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. `seed` has the standard ComfyUI seed widget (fixed/increment/decrement/randomize) and controls MorphGS's own training-time randomness. |
 | **MorphGS: Export Animated Mesh** | Turns a trained experiment into a real, standalone animated 3D asset (`.glb`/`.fbx`) instead of only a rendered video. Replays the trained `AnimationField` checkpoint frame-by-frame to get absolute per-joint transforms, then bakes them onto a skinned mesh in headless Blender: onto the character's *original* rigged file when one is available (which also carries over that file's own materials/textures automatically), or -- for characters with no such file on disk (e.g. MorphGS's own bundled demo characters) -- onto a fresh armature built directly from `mesh.obj` + the RigNet-format rig file's own joint positions and per-vertex skin weights, first re-resolving those weights (`resolve_skinning_weights.py`) exactly as MorphGS's own `Rig` class would for that character's config (some characters' configs apply heat-diffusion smoothing to the raw rig-file weights before training), and reading UVs plus a `.mtl`-referenced texture image if present (or, for characters with no UV/material data at all -- like MorphGS's own bundled `spot` -- per-vertex colors, if `mesh.obj` uses trimesh's "v x y z r g b" extension) so the exported mesh keeps its appearance too. Both `.glb` (self-contained, textures embedded) and `.fbx` (textures embedded via `embed_textures`) carry textures through when the source has them. Shows the result directly on the node itself as soon as it finishes (no separate node needed for that), **and** also outputs `preview_path` -- the same output-dir-relative string ComfyUI-Hunyuan3DWrapper's own `Hy3DExportMesh` returns -- so you can additionally wire it into ComfyUI's native **Preview 3D & Animation** (`Preview3D`) node, exactly like Hunyuan3DWrapper's own example workflow does, if you want that as a separate, movable node in the graph. |
 
@@ -113,18 +113,17 @@ DINOv2 features for Preprocess Character download automatically via `torch.hub` 
 "auto-download a secondary encoder, no dedicated folder" pattern ComfyUI-Hunyuan3DWrapper and
 ComfyUI-HY-Motion1 use for their own helper models). SV4D has no native ComfyUI model
 architecture (unlike SV3D/SVD), so it can't go through the built-in Load Checkpoint node;
-Preprocess Video loads it from `models/sv4d` itself.
+Preprocess Video loads it from `models/diffusion_models` itself.
 
-Each node caches its own outputs **on disk** and skips re-running a stage that's already done
+Each preprocessing node caches its outputs **on disk** with a source-and-settings manifest and
+skips re-running only when that manifest still matches
 (unless `force_reprocess`/`force_retrain`/`force_reexport` is set) -- deliberately not relying
 on ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI restart and
 training here can take hours. This is what actually lets you restart ComfyUI mid-pipeline
-without losing finished work. One nuance: `MorphGS: Train & Render`'s `seed` does **not** by
-itself invalidate this cache at the same `iterations` (MorphGS's own output filenames are keyed
-by `iterations` only, not seed) -- turn on `force_retrain` too if you want a fresh run at a new
-seed. If a node looks like it's reprocessing every time even with the force flag off, check
-whether `scene_name`/`character_name`/`iterations` actually stayed identical between runs --
-any of those changing points at a different (correctly nonexistent) output path.
+without losing finished work. The manifests propagate through Train & Render and Export:
+changing a source file, preprocessing setting, checkpoint, training seed, or trained deform
+checkpoint invalidates the affected downstream cache automatically. The force switches remain
+available for an unconditional rerun.
 
 Every node is also an `OUTPUT_NODE`, so any one of them can be queued and will actually execute
 on its own while you're building out a graph step by step -- without this, ComfyUI's execution
@@ -133,18 +132,18 @@ silently does nothing.
 
 ### Checkpoint folder discoverability
 
-On load, this package creates a dedicated `models/sv4d` folder and registers two ComfyUI
+On load, this package creates a fallback `models/sv4d` folder and registers two ComfyUI
 model-folder categories, so **MorphGS: Preprocess Video**'s `sv4d_mode` dropdown reflects
 whatever checkpoint file you've actually placed:
 
 | Category | Points at |
 |---|---|
-| `morphgs_sv4d_checkpoints` | Your ComfyUI `models/sv4d` folder (created automatically) **and** `models/checkpoints` **and** `$MORPHGS_HOME/src/extlibs/generative-models/checkpoints` |
+| `morphgs_sv4d_checkpoints` | ComfyUI's `models/diffusion_models` folder first, then `models/sv4d` (created automatically), `models/checkpoints`, and `$MORPHGS_HOME/src/extlibs/generative-models/checkpoints` |
 | `morphgs_deform_checkpoints` | `$MORPHGS_HOME/output` (every trained experiment's checkpoints) |
 
 ## Typical workflow
 
-0. Download an SV4D/SP4D checkpoint from Hugging Face into `models/sv4d` (one-time, only if
+0. Download an SV4D/SP4D checkpoint from Hugging Face into `models/diffusion_models` (one-time, only if
    you'll use Preprocess Video — see Installation above).
 1. **MorphGS: Preprocess Character** — point `character_source_path` at your rigged mesh
    (`.fbx`/`.glb`), give it a `character_name`.

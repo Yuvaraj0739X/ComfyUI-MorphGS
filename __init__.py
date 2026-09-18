@@ -8,16 +8,12 @@ def _register_model_folders():
     Register the folders MorphGS: Preprocess Video and MorphGS: Train & Render read
     checkpoints from as proper ComfyUI model folders.
 
-    sv4d gets its own dedicated ComfyUI models/sv4d folder, auto-created here at load time --
-    the same convention ComfyUI-SkinTokens (models/skintoken, created the same way in that
-    package's own __init__.py) and ComfyUI-HY-Motion1 (models/HY-Motion) already use in this
-    same ComfyUI install, rather than dropping an unrelated safetensors file into the generic,
-    shared models/checkpoints bucket. There is no node that downloads the SV4D/SP4D checkpoint
-    for you; download it by hand from Hugging Face and drop it in models/sv4d, and it shows up
-    in MorphGS: Preprocess Video's sv4d_mode dropdown with no extra step. models/diffusion_models
-    (ComfyUI's standard folder for exactly this kind of diffusion checkpoint -- where UNETLoader
-    itself points), models/checkpoints, and MorphGS's own generative-models checkout are also
-    scanned, so a file kept in any of those instead still works.
+    ComfyUI's standard models/diffusion_models folder is scanned first. A dedicated models/sv4d
+    fallback is auto-created here too, matching the per-package folder convention used by
+    ComfyUI-SkinTokens and ComfyUI-HY-Motion1. models/checkpoints and MorphGS's own
+    generative-models checkout are additional fallbacks. There is no node that downloads the
+    SV4D/SP4D checkpoint; download it from Hugging Face into models/diffusion_models and it
+    appears in MorphGS: Preprocess Video's sv4d_mode dropdown.
 
     morphgs_deform_checkpoints points at MorphGS's own per-experiment output directory, where
     MorphGS: Train & Render writes each trained deform-network checkpoint.
@@ -57,3 +53,36 @@ def _register_model_folders():
 
 
 _register_model_folders()
+
+
+def _register_input_routes():
+    """Refreshable input-file lists for ComfyUI frontends that support remote combo options."""
+    try:
+        from aiohttp import web
+        from server import PromptServer
+
+        from .nodes import _character_input_options, _sv4d_checkpoint_options, _video_input_options
+
+        server = PromptServer.instance
+        marker = "_morphgs_input_routes_registered"
+        if getattr(server, marker, False):
+            return
+
+        @server.routes.get("/morphgs/input/characters")
+        async def morphgs_character_inputs(_request):
+            return web.json_response(_character_input_options())
+
+        @server.routes.get("/morphgs/input/videos")
+        async def morphgs_video_inputs(_request):
+            return web.json_response(_video_input_options())
+
+        @server.routes.get("/morphgs/models/sv4d")
+        async def morphgs_sv4d_checkpoints(_request):
+            return web.json_response(_sv4d_checkpoint_options())
+
+        setattr(server, marker, True)
+    except Exception:
+        pass  # Comfy Registry scanner and older ComfyUI builds do not expose PromptServer.
+
+
+_register_input_routes()

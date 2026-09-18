@@ -99,7 +99,6 @@ class MorphGS():
             fk_pivot_mode="joint" if use_amass_rig_behavior else "parent",
         )
 
-        lbs_parts, dominant_joints = self.rig.get_lbs_parts() # List of vertices indices
         print(f"✅ Loaded Target: {len(self.rig.joints_pos)} joints, {len(self.rig.bones)} bones")
 
         # Joints whose local rotation is forced to identity. Character-specific
@@ -150,11 +149,16 @@ class MorphGS():
               
         # 3. Sample skinning weights
         self.skinning_weights = self.rig.skinning_weights.clone() if self.sampled_indices is None else self.rig.skinning_weights[self.sampled_indices].clone()
+        # Cached target features may contain a sampled subset of the original mesh. ARAP's
+        # dominant-joint labels must describe that same subset, not every source vertex.
+        lbs_parts, dominant_joints = self.rig.get_lbs_parts(self.sampled_indices)
         
         gaussian_params = [self.sampled_xyz, self.skinning_weights, self.sampled_features]
         if use_color:
             vertex_colors = render_utils.query_from_uv(self.mesh.visual.uv, np.array(self.mesh.visual.material.image))
             pcd_color = torch.tensor(vertex_colors, dtype=torch.float32, device=device) # (N, 3)
+            if self.sampled_indices is not None:
+                pcd_color = pcd_color[self.sampled_indices]
             gaussian_params.append(pcd_color)
 
         self.model = ParametricModel(self.rig, gaussian_params, lbs_parts, dominant_joints, model_cfg, device=device)

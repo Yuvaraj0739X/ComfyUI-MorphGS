@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -17,6 +18,84 @@ from . import config
 from .process_utils import node_script_path, run_blender_script, run_python, subprocess_env
 
 CATEGORY = "MorphGS"
+_CACHE_MANIFEST = ".morphgs_cache.json"
+
+
+def _safe_stage_name(value, label):
+    """A user-facing scene/character name that cannot escape its pipeline directory."""
+    value = str(value).strip()
+    if not value or value in (".", "..") or os.path.basename(value) != value:
+        raise ValueError(f"{label} must be a non-empty name without path separators: {value!r}")
+    return value
+
+
+def _path_signature(path):
+    """Cheap, stable fingerprint for a selected file or prepared-character directory."""
+    if os.path.isfile(path):
+        stat = os.stat(path)
+        return {"type": "file", "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    if os.path.isdir(path):
+        entries = []
+        for root, dirs, files in os.walk(path):
+            dirs.sort()
+            for name in sorted(files):
+                file_path = os.path.join(root, name)
+                stat = os.stat(file_path)
+                entries.append({
+                    "path": os.path.relpath(file_path, path).replace(os.sep, "/"),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                })
+        return {"type": "directory", "files": entries}
+    raise FileNotFoundError(f"Selected input no longer exists: {path}")
+
+
+def _read_manifest(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_manifest(path, data):
+    """Write only after a stage succeeds, so an interrupted run is never treated as cached."""
+    temp_path = path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(temp_path, path)
+
+
+def _reset_stage_dir(path, expected_parent):
+    """Remove one generated stage directory after proving it is under the expected root."""
+    path = os.path.realpath(path)
+    expected_parent = os.path.realpath(expected_parent)
+    if os.path.commonpath([path, expected_parent]) != expected_parent or path == expected_parent:
+        raise RuntimeError(f"Refusing to clear unsafe cache path: {path}")
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+def _input_change_token(selection, force_reprocess):
+    if force_reprocess:
+        return float("NaN")
+    try:
+        path = _resolve_input_path(selection)
+        return json.dumps(_path_signature(path), sort_keys=True, separators=(",", ":"))
+    except (OSError, ValueError):
+        return float("NaN")
+
+
+def _stage_signature(path):
+    """Manifest contents when available, otherwise a filesystem signature for legacy caches."""
+    manifest = _read_manifest(os.path.join(path, _CACHE_MANIFEST))
+    if manifest is not None:
+        return {"manifest": manifest}
+    try:
+        return {"legacy_signature": _path_signature(path)}
+    except OSError:
+        return None
 
 
 def _list_input_files(extensions):
@@ -59,12 +138,26 @@ def _list_input_prepared_folders():
     return sorted(results)
 
 
+def _character_input_options():
+    return _list_input_files({".fbx", ".glb", ".gltf"}) + _list_input_prepared_folders()
+
+
+def _video_input_options():
+    return _list_input_files({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+
+
 def _resolve_input_path(selection):
     """Resolve a value picked from _list_input_files/_list_input_prepared_folders's dropdown
     back into a real filesystem path under ComfyUI's input/ directory."""
     import folder_paths
 
-    return os.path.join(folder_paths.get_input_directory(), *selection.split("/"))
+    input_dir = os.path.realpath(folder_paths.get_input_directory())
+    resolved = os.path.realpath(os.path.join(input_dir, *selection.replace("\\", "/").split("/")))
+    if os.path.commonpath([input_dir, resolved]) != input_dir:
+        raise ValueError(f"Input must be inside ComfyUI's input directory: {selection!r}")
+    if not os.path.exists(resolved):
+        raise FileNotFoundError(f"Selected input no longer exists: {selection!r}")
+    return resolved
 
 
 class MorphGSPreprocessCharacter:
@@ -82,12 +175,19 @@ class MorphGSPreprocessCharacter:
 
     @classmethod
     def INPUT_TYPES(cls):
-        options = _list_input_files({".fbx", ".glb", ".gltf"}) + _list_input_prepared_folders()
+        options = _character_input_options()
         if not options:
             options = [""]
         return {
             "required": {
-                "character_source_path": (options, {}),
+                "character_source_path": (options, {
+                    "file_upload": True,
+                    "remote": {
+                        "route": "/morphgs/input/characters",
+                        "refresh_button": True,
+                        "control_after_refresh": "first",
+                    },
+                }),
                 "character_name": ("STRING", {"default": "my_character"}),
                 "target_height": ("FLOAT", {"default": 1.6, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
@@ -103,22 +203,46 @@ class MorphGSPreprocessCharacter:
     # entirely and queuing it alone would do nothing (confirmed via a real API test on an
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
+    @classmethod
+    def IS_CHANGED(cls, character_source_path, character_name, target_height, force_reprocess):
+        return _input_change_token(character_source_path, force_reprocess)
+
     def run(self, character_source_path, character_name, target_height, force_reprocess):
         log = []
-        character_source_path = _resolve_input_path(character_source_path)
-        char_dir = os.path.join(config.MORPHGS_HOME, "demo", "characters", character_name)
+        source_selection = character_source_path
+        character_source_path = _resolve_input_path(source_selection)
+        character_name = _safe_stage_name(character_name, "character_name")
+        characters_root = os.path.join(config.MORPHGS_HOME, "demo", "characters")
+        char_dir = os.path.join(characters_root, character_name)
+        manifest_path = os.path.join(char_dir, _CACHE_MANIFEST)
+        desired_manifest = {
+            "schema": 1,
+            "source": source_selection,
+            "source_signature": _path_signature(character_source_path),
+            "target_height": float(target_height),
+        }
 
         ext = os.path.splitext(character_source_path)[1].lower()
         is_mesh_file = ext in (".fbx", ".glb", ".gltf")
 
-        if is_mesh_file:
-            os.makedirs(char_dir, exist_ok=True)
-            pipeline_src_path = os.path.join(char_dir, f"_source{ext}")
-            shutil.copy(character_source_path, pipeline_src_path)
-            log.append(f"Copied {ext} source into {pipeline_src_path}")
+        mesh_path = os.path.join(char_dir, "mesh.obj")
+        rig_path = os.path.join(char_dir, "rigging", "mesh_ori_rig.txt")
+        feature_dir = os.path.join(char_dir, "feature")
+        outputs_ready = (
+            os.path.isfile(mesh_path)
+            and os.path.isfile(rig_path)
+            and os.path.isdir(feature_dir)
+            and bool(os.listdir(feature_dir))
+        )
+        cache_valid = outputs_ready and _read_manifest(manifest_path) == desired_manifest
 
-            mesh_path = os.path.join(char_dir, "mesh.obj")
-            if force_reprocess or not os.path.isfile(mesh_path):
+        if force_reprocess or not cache_valid:
+            _reset_stage_dir(char_dir, characters_root)
+            os.makedirs(char_dir, exist_ok=True)
+            if is_mesh_file:
+                pipeline_src_path = os.path.join(char_dir, f"_source{ext}")
+                shutil.copy(character_source_path, pipeline_src_path)
+                log.append(f"Copied {ext} source into {pipeline_src_path}")
                 out = run_blender_script(
                     node_script_path("mesh_to_morphgs.py"),
                     [pipeline_src_path, char_dir, target_height],
@@ -126,44 +250,26 @@ class MorphGSPreprocessCharacter:
                 )
                 log.append(out)
             else:
-                log.append("mesh.obj already exists, skipping mesh conversion (force_reprocess=False)")
-        else:
-            # Treat character_source_path as a pre-prepared folder (mesh.obj + rigging/mesh_ori_rig.txt).
-            # A user may point this directly at the character's own canonical location (e.g.
-            # they already staged files there by hand, or re-ran with the same path) -- copying
-            # a directory into itself would be wrong, so check via realpath first.
-            if os.path.isdir(char_dir) and os.path.realpath(character_source_path) == os.path.realpath(char_dir):
-                log.append(f"character_source_path is already {char_dir}, nothing to copy")
-            else:
-                os.makedirs(char_dir, exist_ok=True)
                 shutil.copytree(character_source_path, char_dir, dirs_exist_ok=True)
                 log.append(f"Copied prepared character folder into {char_dir}")
 
-        mesh_path = os.path.join(char_dir, "mesh.obj")
-        rig_path = os.path.join(char_dir, "rigging", "mesh_ori_rig.txt")
-        if not (os.path.isfile(mesh_path) and os.path.isfile(rig_path)):
-            # Blender can exit 0 (success) even when the --python script it ran hit an
-            # uncaught exception partway through -- it doesn't set a non-zero exit code for
-            # that on its own, so run_blender_script's own non-zero-exit check doesn't catch
-            # it. Surface the collected log (Blender's actual stdout/stderr, including any
-            # traceback) here instead of a contextless message, matching every other node's
-            # final failure check in this file.
-            raise RuntimeError(
-                f"Character not ready after conversion: expected mesh.obj + rigging/mesh_ori_rig.txt "
-                f"under {char_dir}. Full log:\n" + "\n".join(log)
-            )
+            if not (os.path.isfile(mesh_path) and os.path.isfile(rig_path)):
+                raise RuntimeError(
+                    f"Character not ready after conversion: expected mesh.obj + rigging/mesh_ori_rig.txt "
+                    f"under {char_dir}. Full log:\n" + "\n".join(log)
+                )
 
-        feature_dir = os.path.join(char_dir, "feature")
-        feat_ready = os.path.isdir(feature_dir) and len(os.listdir(feature_dir)) > 0
-        if force_reprocess or not feat_ready:
             out = run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "preprocess", "preprocess_tgt.py"),
                 [char_dir],
                 timeout=1800,
             )
             log.append(out)
+            if not os.path.isdir(feature_dir) or not os.listdir(feature_dir):
+                raise RuntimeError(f"Character preprocessing produced no features under {feature_dir}")
+            _write_manifest(manifest_path, desired_manifest)
         else:
-            log.append("Rendered views + features already exist, skipping preprocess_tgt.py")
+            log.append("Character source and settings match the completed on-disk cache; skipping preprocessing")
 
         return (character_name, "\n".join(log))
 
@@ -173,6 +279,23 @@ _SV4D_CHECKPOINTS = {
     "sv4d2_8views": ("stabilityai/sv4d2.0", "sv4d2_8views.safetensors"),
     "sp4d": ("stabilityai/sp4d", "sp4d.safetensors"),
 }
+
+
+def _sv4d_checkpoint_options():
+    options = list(_SV4D_CHECKPOINTS.keys())
+    try:
+        import folder_paths
+
+        known_filenames = {fname for _, fname in _SV4D_CHECKPOINTS.values()}
+        available = [
+            filename for filename in folder_paths.get_filename_list("morphgs_sv4d_checkpoints")
+            if os.path.basename(filename) in known_filenames
+        ]
+        if available:
+            options = available
+    except Exception:
+        pass  # No folder_paths available -- fall back to mode names for registry scanning.
+    return options
 
 
 # sgm's own attention implementations, and their mathematically-equivalent non-xformers
@@ -461,10 +584,10 @@ def _stage_sv4d_checkpoint(ckpt_path, filename):
     MorphGS's preprocess_src.py chdir's into src/extlibs/generative-models and loads the
     checkpoint by the relative path "checkpoints/<name>.safetensors" hardcoded in
     generative-models' own sampling configs. So wherever the user keeps the actual file
-    (ComfyUI's models/sv4d, models/checkpoints, ...), it ALSO has to be reachable at that one
+    (ComfyUI's models/diffusion_models, models/sv4d, models/checkpoints, ...), it ALSO has to be reachable at that one
     relative location, or the load dies with a bare "FileNotFoundError: No such file or
     directory: checkpoints/sv4d2.safetensors" deep inside sgm -- confirmed in practice, with
-    the file sitting correctly in models/sv4d the whole time.
+    the file sitting correctly in a registered ComfyUI model folder the whole time.
 
     Linked rather than copied: these checkpoints are ~12GB. Falls back hardlink -> copy for
     filesystems that don't allow symlinks."""
@@ -519,14 +642,13 @@ class MorphGSPreprocessVideo:
     sv4d_mode is a real dropdown of SV4D/SP4D checkpoints found under the
     morphgs_sv4d_checkpoints category (registered by this package at load time, via
     folder_paths.get_filename_list) -- not a fixed list of names. This package creates and
-    registers a dedicated models/sv4d folder for this (the same convention
-    ComfyUI-SkinTokens's models/skintoken and ComfyUI-HY-Motion1's models/HY-Motion use), and
-    also scans models/checkpoints and MorphGS's own generative-models checkout, so a checkpoint
-    kept in any of those three shows up here. There is no node that downloads it for you:
+    scans ComfyUI's standard models/diffusion_models folder first, then the dedicated
+    models/sv4d fallback, models/checkpoints, and MorphGS's own generative-models checkout.
+    There is no node that downloads it for you:
     download the file yourself from
       - sv4d / sv4d2_8views: https://huggingface.co/stabilityai/sv4d2.0
       - sp4d: https://huggingface.co/stabilityai/sp4d
-    and place it in your ComfyUI models/sv4d folder. Falls back to a plain list of mode names
+    and place it in your ComfyUI models/diffusion_models folder. Falls back to mode names
     when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner, which
     has no `folder_paths` module at all).
 
@@ -539,28 +661,30 @@ class MorphGSPreprocessVideo:
 
     @classmethod
     def INPUT_TYPES(cls):
-        sv4d_options = list(_SV4D_CHECKPOINTS.keys())
-        try:
-            import folder_paths
+        sv4d_options = _sv4d_checkpoint_options()
 
-            known_filenames = {fname for _, fname in _SV4D_CHECKPOINTS.values()}
-            available = [
-                f for f in folder_paths.get_filename_list("morphgs_sv4d_checkpoints")
-                if os.path.basename(f) in known_filenames
-            ]
-            if available:
-                sv4d_options = available
-        except Exception:
-            pass  # No folder_paths available -- fall back to plain mode names.
-
-        video_options = _list_input_files({".mp4", ".mov", ".avi", ".mkv", ".webm"}) or [""]
+        video_options = _video_input_options() or [""]
 
         return {
             "required": {
-                "video_path": (video_options, {}),
+                "video_path": (video_options, {
+                    "video_upload": True,
+                    "remote": {
+                        "route": "/morphgs/input/videos",
+                        "refresh_button": True,
+                        "control_after_refresh": "first",
+                    },
+                }),
                 "scene_name": ("STRING", {"default": "my_scene"}),
                 "already_masked": ("BOOLEAN", {"default": False}),
-                "sv4d_mode": (sv4d_options, {"default": sv4d_options[0]}),
+                "sv4d_mode": (sv4d_options, {
+                    "default": sv4d_options[0],
+                    "remote": {
+                        "route": "/morphgs/models/sv4d",
+                        "refresh_button": True,
+                        "control_after_refresh": "first",
+                    },
+                }),
                 "fastmode": ("BOOLEAN", {"default": True}),
                 "max_frames": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 12}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
@@ -576,10 +700,17 @@ class MorphGSPreprocessVideo:
     # entirely and queuing it alone would do nothing (confirmed via a real API test on an
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
+    @classmethod
+    def IS_CHANGED(cls, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
+                   force_reprocess):
+        return _input_change_token(video_path, force_reprocess)
+
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
             force_reprocess):
         log = []
-        video_path = _resolve_input_path(video_path)
+        source_selection = video_path
+        video_path = _resolve_input_path(source_selection)
+        scene_name = _safe_stage_name(scene_name, "scene_name")
         mode, filename = _resolve_sv4d_selection(sv4d_mode)
 
         import folder_paths
@@ -590,17 +721,39 @@ class MorphGSPreprocessVideo:
             raise RuntimeError(
                 f"SV4D checkpoint '{filename}' not found. Download it from "
                 f"https://huggingface.co/{hf_repo} and place it in your ComfyUI "
-                f"models/sv4d folder (models/checkpoints also works)."
+                f"models/diffusion_models folder (models/sv4d and models/checkpoints also work)."
             )
         log.append(_stage_sv4d_checkpoint(ckpt_path, filename))
         log.append(_disable_xformers_in_sv4d_config(filename))
         log.append(_chunk_sgm_attention_batches())
         log.append(_align_vae_decode_dtype())
 
-        scene_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
+        videos_root = os.path.join(config.MORPHGS_HOME, "demo", "videos")
+        processed_root = os.path.join(config.MORPHGS_HOME, "demo", "processed_videos")
+        scene_dir = os.path.join(videos_root, scene_name)
         rgb_path = os.path.join(scene_dir, "rgb.mp4")
+        processed_dir = os.path.join(processed_root, scene_name)
+        manifest_path = os.path.join(processed_dir, _CACHE_MANIFEST)
+        desired_manifest = {
+            "schema": 1,
+            "source": source_selection,
+            "source_signature": _path_signature(video_path),
+            "already_masked": bool(already_masked),
+            "sv4d_mode": mode,
+            "checkpoint": filename,
+            "checkpoint_signature": _path_signature(ckpt_path),
+            "fastmode": bool(fastmode),
+            "max_frames": int(max_frames),
+        }
+        cache_valid = (
+            os.path.isfile(rgb_path)
+            and os.path.isdir(processed_dir)
+            and _read_manifest(manifest_path) == desired_manifest
+        )
 
-        if force_reprocess or not os.path.isfile(rgb_path):
+        if force_reprocess or not cache_valid:
+            _reset_stage_dir(scene_dir, videos_root)
+            _reset_stage_dir(processed_dir, processed_root)
             os.makedirs(scene_dir, exist_ok=True)
             pipeline_src_video = os.path.join(scene_dir, f"_source{os.path.splitext(video_path)[1]}")
             shutil.copy(video_path, pipeline_src_video)
@@ -612,11 +765,7 @@ class MorphGSPreprocessVideo:
                 log, lambda: run_python(node_script_path("mask_video.py"), mask_args, timeout=1800)
             )
             log.append(out)
-        else:
-            log.append(f"{rgb_path} already exists, skipping masking step")
 
-        processed_dir = os.path.join(config.MORPHGS_HOME, "demo", "processed_videos", scene_name)
-        if force_reprocess or not os.path.isdir(processed_dir):
             args = [rgb_path, "--mode", mode]
             if fastmode:
                 args.append("--fastmode")
@@ -631,8 +780,11 @@ class MorphGSPreprocessVideo:
                 timeout=3600,
             ))
             log.append(out)
+            if not os.path.isdir(processed_dir):
+                raise RuntimeError(f"Video preprocessing produced no output directory at {processed_dir}")
+            _write_manifest(manifest_path, desired_manifest)
         else:
-            log.append(f"processed_videos/{scene_name} already exists, skipping preprocess_src.py")
+            log.append("Video source and settings match the completed on-disk cache; skipping preprocessing")
 
         return (scene_name, "\n".join(log))
 
@@ -645,11 +797,9 @@ class MorphGSTrainAndRender:
     seed controls MorphGS's own training-time randomness (Gaussian initialization, sampling --
     threaded through to main.py as --project.seed, the same config field MorphGS's own configs
     set to 43 by default) and has the standard ComfyUI seed widget next to it
-    (fixed/increment/decrement/randomize) so you can get a different training result the usual
-    way. One real caveat: MorphGS's own output filenames are keyed by iterations only, not
-    seed (rendered_video_<iterations>.mp4) -- so changing just the seed at the same iterations
-    does NOT by itself invalidate the on-disk cache below. If you want a fresh run at a new
-    seed but the same iterations, turn on force_retrain too.
+    (fixed/increment/decrement/randomize). The disk-cache manifest includes this seed and both
+    preprocessing manifests, so a changed seed, character, video, or preprocessing setting
+    automatically invalidates the corresponding training result.
 
     force_retrain exists because the check below (skip training if the render already exists)
     is deliberately a real, on-disk check, not ComfyUI's own in-memory result cache -- training
@@ -690,12 +840,30 @@ class MorphGSTrainAndRender:
     # entirely and queuing it alone would do nothing (confirmed via a real API test on an
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
+    @classmethod
+    def IS_CHANGED(cls, scene_name, character_name, iterations, seed, force_retrain):
+        if force_retrain:
+            return float("NaN")
+        try:
+            scene_name = _safe_stage_name(scene_name, "scene_name")
+            character_name = _safe_stage_name(character_name, "character_name")
+            token = {
+                "scene": _stage_signature(os.path.join(config.MORPHGS_HOME, "demo", "processed_videos", scene_name)),
+                "character": _stage_signature(os.path.join(config.MORPHGS_HOME, "demo", "characters", character_name)),
+            }
+            return json.dumps(token, sort_keys=True, separators=(",", ":"))
+        except (OSError, ValueError):
+            return float("NaN")
+
     def run(self, scene_name, character_name, iterations, seed, force_retrain):
         log = []
+        scene_name = _safe_stage_name(scene_name, "scene_name")
+        character_name = _safe_stage_name(character_name, "character_name")
         experiment = f"{scene_name}_to_{character_name}"
         config_path = os.path.join(config.MORPHGS_HOME, "configs", "demo", f"{experiment}.yaml")
+        model_dir = _experiment_model_dir(experiment)
         render_path = os.path.join(
-            config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "render",
+            model_dir, "render",
             f"rendered_video_{iterations}.mp4",
         )
         # main.py writes the deform checkpoint and the render video in the same block, so a run
@@ -704,8 +872,21 @@ class MorphGSTrainAndRender:
         # the failure only surfaced later in Export Animated Mesh as a missing checkpoint with
         # nothing to explain it. Skip only when everything downstream needs is actually present.
         deform_path = os.path.join(
-            config.MORPHGS_HOME, "output", experiment, "model", "morphgs", "deform",
+            model_dir, "deform",
             f"iteration_{iterations}.pth",
+        )
+        manifest_path = os.path.join(model_dir, f".morphgs_train_cache_{iterations}.json")
+        desired_manifest = {
+            "schema": 1,
+            "scene": _stage_signature(os.path.join(config.MORPHGS_HOME, "demo", "processed_videos", scene_name)),
+            "character": _stage_signature(os.path.join(config.MORPHGS_HOME, "demo", "characters", character_name)),
+            "iterations": int(iterations),
+            "seed": int(seed),
+        }
+        cache_valid = (
+            os.path.isfile(render_path)
+            and os.path.isfile(deform_path)
+            and _read_manifest(manifest_path) == desired_manifest
         )
 
         if not os.path.isfile(config_path):
@@ -716,7 +897,9 @@ class MorphGSTrainAndRender:
                 f.write("{}\n")
             log.append(f"Created minimal experiment config at {config_path} (defaults from configs/base.yaml)")
 
-        if force_retrain or not (os.path.isfile(render_path) and os.path.isfile(deform_path)):
+        if force_retrain or not cache_valid:
+            if os.path.isfile(manifest_path):
+                os.remove(manifest_path)
             out = run_python(
                 os.path.join(config.MORPHGS_HOME, "src", "main.py"),
                 [
@@ -739,6 +922,7 @@ class MorphGSTrainAndRender:
                     f"Training finished but no {label} was produced at {path}. "
                     f"{_describe_iteration_artifacts(experiment)}\nFull log:\n" + "\n".join(log)
                 )
+        _write_manifest(manifest_path, desired_manifest)
 
         import folder_paths
 
@@ -828,8 +1012,33 @@ class MorphGSExportAnimatedMesh:
     CATEGORY = CATEGORY
     OUTPUT_NODE = True
 
+    @classmethod
+    def IS_CHANGED(cls, scene_name, character_name, iterations, output_format, force_reexport):
+        if force_reexport:
+            return float("NaN")
+        try:
+            experiment = (
+                f"{_safe_stage_name(scene_name, 'scene_name')}_to_"
+                f"{_safe_stage_name(character_name, 'character_name')}"
+            )
+            available = _available_iterations(experiment)
+            requested_iteration = int(iterations)
+            resolved_iteration = (
+                requested_iteration if requested_iteration in available
+                else available[-1] if available
+                else requested_iteration
+            )
+            deform_path = os.path.join(
+                _experiment_model_dir(experiment), "deform", f"iteration_{resolved_iteration}.pth"
+            )
+            return json.dumps(_path_signature(deform_path), sort_keys=True, separators=(",", ":"))
+        except (OSError, ValueError):
+            return float("NaN")
+
     def run(self, scene_name, character_name, iterations, output_format, force_reexport):
         log = []
+        scene_name = _safe_stage_name(scene_name, "scene_name")
+        character_name = _safe_stage_name(character_name, "character_name")
         experiment = f"{scene_name}_to_{character_name}"
         char_dir = os.path.join(config.MORPHGS_HOME, "demo", "characters", character_name)
         video_dir = os.path.join(config.MORPHGS_HOME, "demo", "videos", scene_name)
@@ -863,6 +1072,7 @@ class MorphGSExportAnimatedMesh:
         render_dir = os.path.join(_experiment_model_dir(experiment), "render")
         pose_npz_path = os.path.join(render_dir, f"pose_sequence_{iterations}.npz")
         exported_path = os.path.join(render_dir, f"animated_mesh_{iterations}.{output_format}")
+        export_manifest_path = os.path.join(render_dir, f".morphgs_export_cache_{iterations}_{output_format}.json")
 
         for label, path in [("rig", rig_path), ("mesh", mesh_obj_path)]:
             if not os.path.isfile(path):
@@ -870,6 +1080,18 @@ class MorphGSExportAnimatedMesh:
                     f"Required {label} file not found at {path}. Run MorphGS: Preprocess Character "
                     f"and MorphGS: Train & Render for '{experiment}' first."
                 )
+
+        desired_export_manifest = {
+            "schema": 1,
+            "deform_checkpoint": _path_signature(ckpt_path),
+            "mesh": _path_signature(mesh_obj_path),
+            "rig": _path_signature(rig_path),
+            "output_format": output_format,
+        }
+        export_cache_valid = (
+            os.path.isfile(exported_path)
+            and _read_manifest(export_manifest_path) == desired_export_manifest
+        )
 
         # mesh_to_morphgs.py (run by MorphGS: Preprocess Character) copies the original rigged
         # source file into the pipeline as _source.<ext> when one exists, and characters
@@ -927,7 +1149,9 @@ class MorphGSExportAnimatedMesh:
             f"normalization) at {fps:.3f} fps (from {video_dir}/rgb.mp4)"
         )
 
-        if force_reexport or not os.path.isfile(exported_path):
+        if force_reexport or not export_cache_valid:
+            if os.path.isfile(export_manifest_path):
+                os.remove(export_manifest_path)
             os.makedirs(render_dir, exist_ok=True)
             morphgs_src_path = os.path.join(config.MORPHGS_HOME, "src")
             pythonpath_env = {
@@ -973,8 +1197,11 @@ class MorphGSExportAnimatedMesh:
                     timeout=600,
                 )
             log.append(bake_out)
+            if not os.path.isfile(exported_path):
+                raise RuntimeError(f"Animation export produced no file at {exported_path}")
+            _write_manifest(export_manifest_path, desired_export_manifest)
         else:
-            log.append(f"Animated mesh already exists at {exported_path}, skipping (force_reexport=False)")
+            log.append("Training checkpoint and character inputs match the exported-mesh cache; skipping export")
 
         if not os.path.isfile(exported_path):
             raise RuntimeError(

@@ -80,7 +80,7 @@
           {
             "name": "sv4d2.safetensors",
             "url": "https://huggingface.co/stabilityai/sv4d2.0/resolve/main/sv4d2.safetensors",
-            "directory": "sv4d"
+            "directory": "diffusion_models"
           }
         ]
       },
@@ -277,7 +277,7 @@
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "MorphGS setup (one-time): install this node via ComfyUI Manager like any other node -- requirements.txt plus install.py (which picks prebuilt pytorch3d/gsplat wheels for your torch build; no compiler needed). Blender 4.2+ must be on PATH. If you'll use Preprocess Video, download an SV4D/SP4D checkpoint from stabilityai/sv4d2.0 or stabilityai/sp4d on Hugging Face into your ComfyUI models/sv4d folder (created automatically) -- this workflow declares sv4d2.safetensors in its model metadata, so ComfyUI's missing-models dialog offers the link when you load it. It then shows up in the sv4d_mode dropdown below.\n\nPipeline order: Preprocess Character + Preprocess Video can run in either order or in parallel, then Train & Render, then (optional) Export Animated Mesh for a downloadable .glb/.fbx instead of just a rendered video -- wired here into ComfyUI's native \"Preview 3D & Animation\" node so you can view/orbit the animated result.\n\nCost tip: SV4D is the expensive stage -- it diffuses 12 frames at a time, so a few hundred frames is a ~20 minute run. Set max_frames on Preprocess Video to 12 or 24 to take the whole pipeline end-to-end cheaply while checking your setup, then back to 0 (= whole clip) for the real render."
+        "MorphGS setup (one-time): install this node via ComfyUI Manager like any other node -- requirements.txt plus install.py (which picks prebuilt pytorch3d/gsplat wheels for your torch build; no compiler needed). Blender 4.2+ must be on PATH. If you'll use Preprocess Video, download an SV4D/SP4D checkpoint from stabilityai/sv4d2.0 or stabilityai/sp4d on Hugging Face into your ComfyUI models/diffusion_models folder -- this workflow declares sv4d2.safetensors in its model metadata, so ComfyUI's missing-models dialog offers the link when you load it. It then shows up in the sv4d_mode dropdown below.\n\nPipeline order: Preprocess Character + Preprocess Video can run in either order or in parallel, then Train & Render, then (optional) Export Animated Mesh for a downloadable .glb/.fbx instead of just a rendered video -- wired here into ComfyUI's native \"Preview 3D & Animation\" node so you can view/orbit the animated result.\n\nCost tip: SV4D is the expensive stage -- it diffuses 12 frames at a time, so a few hundred frames is a ~20 minute run. Set max_frames on Preprocess Video to 12 or 24 to take the whole pipeline end-to-end cheaply while checking your setup, then back to 0 (= whole clip) for the real render."
       ],
       "color": "#432",
       "bgcolor": "#653"
