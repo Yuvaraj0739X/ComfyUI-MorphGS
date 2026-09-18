@@ -26,7 +26,6 @@ def PILtoTorch(pil_image, resolution):
 
 def set_seed(seed=42):
     seed = int(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

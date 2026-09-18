@@ -3,7 +3,7 @@ Convert a rigged character (Mixamo .fbx export, or a SkinTokens/glTF-rigged .glb
 Blender can import with an armature + skinned mesh) into MorphGS's expected character format:
     <out_dir>/mesh.obj
     <out_dir>/rigging/mesh_ori_rig.txt   (RigNet-compatible: joints/root/hier/skin, matching
-                                          MorphGS's own RigModel.load_rig_txt / rigging_pinocchio.save_rig_txt)
+                                          MorphGS's own RigModel.load_rig_txt)
 
 Run inside Blender (headless):
     blender --background --python mesh_to_morphgs.py -- <input.fbx|input.glb> <out_dir> [target_height]
