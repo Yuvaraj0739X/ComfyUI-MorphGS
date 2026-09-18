@@ -4,7 +4,6 @@
 import torch
 import torch.nn as nn
 import os
-from pykeops.torch import LazyTensor
 import numpy as np
 import copy
 
@@ -13,6 +12,34 @@ from model.RigModel import Rig
 from feature_splatting.gaussian_model import GaussianModel
 from feature_splatting.utils.graphics_utils import BasicPointCloud
 from feature_splatting.utils.sh_utils import SH2RGB
+
+
+def knn_indices(xyz, k, chunk_size=512):
+    """Indices of each point's k nearest points (itself included), ascending by distance.
+
+    Replaces the KeOps call `D_ij.argKmin(dim=1, K=k)`, which MorphGS used only to set up ARAP
+    neighbours -- twice, both at initialisation, never inside the training loop.
+
+    KeOps JIT-compiles CUDA at runtime, so it needs a CUDA toolkit on whatever machine runs the
+    pipeline. On a ComfyUI install whose CUDA comes from pip wheels there is no nvcc and no
+    unversioned libnvrtc.so to link against, so KeOps fails to build its own JIT engine
+    ("cannot find -lnvrtc"), prints "OK" regardless, and then dies later trying to dlopen the
+    object it never produced. Plain torch computes the same thing with nothing to compile.
+
+    Distances are formed exactly, as squared differences rather than the expanded
+    |a|^2 - 2a.b + |b|^2 form, so ranking cannot be perturbed by cancellation; chunked over
+    rows so the full N x N matrix is never materialised.
+    """
+    n = xyz.shape[0]
+    k = min(int(k), n)
+    with torch.no_grad():
+        out = torch.empty((n, k), dtype=torch.long, device=xyz.device)
+        for start in range(0, n, chunk_size):
+            stop = min(start + chunk_size, n)
+            sq_dist = ((xyz[start:stop, None, :] - xyz[None, :, :]) ** 2).sum(-1)
+            out[start:stop] = sq_dist.topk(k, dim=1, largest=False, sorted=True).indices
+    return out
+
 
 from utils.articulation_utils import calc_skinning_weights
 from utils.mesh_utils import fps_pointcloud
@@ -102,10 +129,7 @@ class ParametricModel():
 
             # Initialize ARAP nearest neighbours
             neighbor_num = self.opt_cfg.arap_nn_num
-            xyz1 = LazyTensor(xyz[:, None, :], )
-            xyz2 = LazyTensor(xyz[None, :, :])
-            D_ij = ((xyz1 - xyz2) ** 2).sum(-1)
-            self.xyz_nn_i = D_ij.argKmin(dim=1, K=neighbor_num).to(self.device)
+            self.xyz_nn_i = knn_indices(xyz, neighbor_num).to(self.device)
             self.xyz_nn_dist = torch.sqrt(((xyz[:,None,:] - xyz[self.xyz_nn_i,:])**2).sum(-1) + self.eps).to(self.device)
 
             # ARAP's K-nearest-neighbours are chosen by pure rest-pose 3D distance, with no
@@ -206,10 +230,7 @@ class ParametricModel():
         _xyz = xyz.clone().detach()
         if self.prev_gs_num != self.gaussians.get_xyz.shape[0]: # gaussian count changed; xyz_nn_i must be rebuilt
             neighbor_num = self.opt_cfg.arap_nn_num
-            xyz1 = LazyTensor(_xyz[:, None, :], )
-            xyz2 = LazyTensor(_xyz[None, :, :])
-            D_ij = ((xyz1 - xyz2) ** 2).sum(-1)
-            self.xyz_nn_i = D_ij.argKmin(dim=1, K=neighbor_num).to(self.device)
+            self.xyz_nn_i = knn_indices(_xyz, neighbor_num).to(self.device)
 
             self.prev_gs_num = self.gaussians.get_xyz.shape[0]
 

@@ -16,7 +16,9 @@ imageio-ffmpeg
 matplotlib
 tqdm
 pyyaml
-pykeops
+# pykeops -- removed: its only use (ARAP k-nearest-neighbours in ParametricModel) is now
+# plain torch. It JIT-compiles CUDA at runtime, which needs a toolkit that a pip-CUDA
+# ComfyUI install does not have, and it failed to link against libnvrtc there.
 fpsample
 jaxtyping
 typeguard
