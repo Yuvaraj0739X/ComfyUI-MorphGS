@@ -14,9 +14,10 @@ def _register_model_folders():
     same ComfyUI install, rather than dropping an unrelated safetensors file into the generic,
     shared models/checkpoints bucket. There is no node that downloads the SV4D/SP4D checkpoint
     for you; download it by hand from Hugging Face and drop it in models/sv4d, and it shows up
-    in MorphGS: Preprocess Video's sv4d_mode dropdown with no extra step. models/checkpoints and
-    MorphGS's own generative-models checkout are also scanned, so a file kept in either of those
-    instead still works.
+    in MorphGS: Preprocess Video's sv4d_mode dropdown with no extra step. models/diffusion_models
+    (ComfyUI's standard folder for exactly this kind of diffusion checkpoint -- where UNETLoader
+    itself points), models/checkpoints, and MorphGS's own generative-models checkout are also
+    scanned, so a file kept in any of those instead still works.
 
     morphgs_deform_checkpoints points at MorphGS's own per-experiment output directory, where
     MorphGS: Train & Render writes each trained deform-network checkpoint.
@@ -36,7 +37,14 @@ def _register_model_folders():
             os.makedirs(sv4d_dir)
 
         gm_ckpt_dir = os.path.join(config.MORPHGS_HOME, "src", "extlibs", "generative-models", "checkpoints")
-        sv4d_paths = [sv4d_dir, *folder_paths.get_folder_paths("checkpoints")]
+        # diffusion_models first: ComfyUI's own standard home for a single diffusion checkpoint
+        # (what UNETLoader reads from) is the natural place to keep an SV4D/SP4D file, ahead of
+        # the dedicated sv4d folder and the generic checkpoints bucket.
+        sv4d_paths = [
+            *folder_paths.get_folder_paths("diffusion_models"),
+            sv4d_dir,
+            *folder_paths.get_folder_paths("checkpoints"),
+        ]
         if os.path.isdir(gm_ckpt_dir):
             sv4d_paths.append(gm_ckpt_dir)
         folder_paths.folder_names_and_paths["morphgs_sv4d_checkpoints"] = (sv4d_paths, {".safetensors", ".ckpt"})
