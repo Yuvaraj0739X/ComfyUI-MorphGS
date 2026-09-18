@@ -6,7 +6,8 @@ Blender can import with an armature + skinned mesh) into MorphGS's expected char
                                           MorphGS's own RigModel.load_rig_txt)
 
 Run inside Blender (headless):
-    blender --background --python mesh_to_morphgs.py -- <input.fbx|input.glb> <out_dir> [target_height]
+    blender --background --python mesh_to_morphgs.py -- <input.fbx|input.glb> <out_dir> \
+        [target_height] [auto_from_file_units|manual_target_height]
 
 Notes from building the original Mixamo-only version of this script against a real
 AI-generated + Mixamo-rigged character:
@@ -20,12 +21,16 @@ AI-generated + Mixamo-rigged character:
 import bpy
 import os
 import sys
+from mathutils import Vector
 
 argv = sys.argv
 argv = argv[argv.index("--") + 1:]
 input_path = argv[0]
 out_dir = argv[1]
 target_height = float(argv[2]) if len(argv) > 2 else 1.6
+height_mode = argv[3] if len(argv) > 3 else "auto_from_file_units"
+if height_mode not in ("auto_from_file_units", "manual_target_height"):
+    raise ValueError(f"Unsupported height mode: {height_mode}")
 
 MIN_COMPONENT_VERTS = 50
 WELD_DISTANCE = 0.0001  # in final (post-scale-fix) units, so this is sub-millimeter at human scale
@@ -45,8 +50,28 @@ elif ext in (".glb", ".gltf"):
 else:
     raise ValueError(f"Unsupported input format: {ext} (expected .fbx, .glb, or .gltf)")
 
-mesh_obj = next(o for o in bpy.data.objects if o.type == 'MESH')
 armature_obj = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
+
+
+def uses_armature(obj, armature):
+    """Whether a mesh is skinned/parented to this armature."""
+    parent = obj.parent
+    while parent is not None:
+        if parent == armature:
+            return True
+        parent = parent.parent
+    return any(mod.type == 'ARMATURE' and mod.object == armature for mod in obj.modifiers)
+
+
+# Imported character files often contain eyes, teeth, or accessories as separate meshes.
+# Select the largest mesh actually associated with the rig instead of whichever datablock Blender
+# happens to enumerate first; this is the mesh the rest of this converter currently exports.
+rigged_meshes = [o for o in bpy.data.objects if o.type == 'MESH' and uses_armature(o, armature_obj)]
+if not rigged_meshes:
+    rigged_meshes = [o for o in bpy.data.objects if o.type == 'MESH']
+if not rigged_meshes:
+    raise RuntimeError("The imported character contains no mesh objects")
+mesh_obj = max(rigged_meshes, key=lambda o: len(o.data.vertices))
 
 print(f"Mesh: {mesh_obj.name}, {len(mesh_obj.data.vertices)} verts")
 print(f"Armature: {armature_obj.name}, {len(armature_obj.data.bones)} bones")
@@ -66,11 +91,40 @@ print(f"Mesh dimensions after transform apply (X,Y,Z): {dims.x:.4f}, {dims.y:.4f
 # object scale (either direction), so correct against measured height rather than assuming a
 # fixed 100x/0.01x direction. Only the PARENT (armature) scale is set here -- mesh_obj is
 # parented to it, so setting both would double-apply the factor through the parent chain.
-height = dims.z  # Blender is Z-up internally; this becomes Y after the -Z-forward/Y-up obj export remap
+depsgraph = bpy.context.evaluated_depsgraph_get()
+evaluated_mesh = mesh_obj.evaluated_get(depsgraph)
+world_z = [(evaluated_mesh.matrix_world @ Vector(corner)).z for corner in evaluated_mesh.bound_box]
+height = max(world_z) - min(world_z)
+# Blender is Z-up internally; this becomes Y after the -Z-forward/Y-up OBJ export remap.
 if height < 1e-6:
     raise RuntimeError(f"Degenerate mesh height ({height}); aborting before writing bad data.")
-scale_fix = target_height / height
-print(f"Measured height={height:.6f}, target={target_height}, applying scale_fix={scale_fix:.6f}")
+
+# glTF specifies metres after node transforms, and Blender's FBX importer applies the file's unit
+# metadata. Consequently the post-import Blender dimensions are the strongest automatic physical
+# height signal available without asking the user. Some FBX exporters omit or corrupt unit metadata,
+# so reject clearly implausible character heights and fall back to the manual value instead of
+# silently creating a 180-metre or 0.018-metre training asset.
+detected_height_m = float(height)
+AUTO_HEIGHT_MIN_M = 0.1
+AUTO_HEIGHT_MAX_M = 10.0
+if height_mode == "auto_from_file_units" and AUTO_HEIGHT_MIN_M <= detected_height_m <= AUTO_HEIGHT_MAX_M:
+    effective_target_height = detected_height_m
+    height_decision = "auto: trusted imported file units"
+elif height_mode == "auto_from_file_units":
+    effective_target_height = target_height
+    height_decision = (
+        f"auto fallback: detected height outside {AUTO_HEIGHT_MIN_M:g}-{AUTO_HEIGHT_MAX_M:g} m"
+    )
+else:
+    effective_target_height = target_height
+    height_decision = "manual target height"
+
+scale_fix = effective_target_height / height
+print(
+    f"Measured height={detected_height_m:.6f} m, requested target={target_height}, "
+    f"effective target={effective_target_height:.6f}, mode={height_mode}, "
+    f"decision={height_decision}, applying scale_fix={scale_fix:.6f}"
+)
 armature_obj.scale = (scale_fix, scale_fix, scale_fix)
 bpy.ops.object.select_all(action='DESELECT')
 armature_obj.select_set(True)
@@ -219,7 +273,11 @@ with open(meta_path, "w") as f:
     json.dump({
         "source_file": os.path.basename(input_path),
         "scale_fix": scale_fix,
-        "target_height": target_height,
+        "target_height": effective_target_height,
+        "requested_target_height": target_height,
+        "detected_height_m": detected_height_m,
+        "height_mode": height_mode,
+        "height_decision": height_decision,
         "obj_export_axis_remap": "blender(x,y,z) -> obj(x, z, -y)",
     }, f, indent=2)
 print(f"Exported: {meta_path}")

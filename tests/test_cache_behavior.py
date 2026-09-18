@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -82,11 +83,19 @@ class CacheBehaviorTests(unittest.TestCase):
         calls = []
 
         def fake_blender(_script, args, timeout=None):
-            calls.append(("blender", args[2]))
+            calls.append(("blender", args[2], args[3]))
             char_dir = Path(args[1])
             (char_dir / "rigging").mkdir(parents=True, exist_ok=True)
             (char_dir / "mesh.obj").write_text("mesh", encoding="utf-8")
             (char_dir / "rigging" / "mesh_ori_rig.txt").write_text("rig", encoding="utf-8")
+            (char_dir / "rigging" / "conversion_meta.json").write_text(
+                json.dumps({
+                    "detected_height_m": 1.82,
+                    "target_height": 1.82,
+                    "height_decision": "auto: trusted imported file units",
+                }),
+                encoding="utf-8",
+            )
             return "converted"
 
         def fake_python(_script, args, timeout=None, env=None):
@@ -97,12 +106,26 @@ class CacheBehaviorTests(unittest.TestCase):
             return "preprocessed"
 
         node = self.nodes.MorphGSPreprocessCharacter()
+        input_types = node.INPUT_TYPES()["required"]
+        self.assertEqual(input_types["height_mode"][0][0], "auto_from_file_units")
+        self.assertEqual(node.RETURN_NAMES[-1], "detected_height_m")
         with mock.patch.object(self.nodes, "run_blender_script", fake_blender), mock.patch.object(
             self.nodes, "run_python", fake_python
         ):
-            node.run("character.glb", "hero", 1.6, False)
+            result = node.run("character.glb", "hero", 1.6, False)
+            self.assertAlmostEqual(result[2], 1.82)
+            self.assertIn("detected 1.8200 m", result[1])
+            self.assertEqual(calls[0][2], "auto_from_file_units")
             node.run("character.glb", "hero", 1.6, False)
             self.assertEqual(len(calls), 2)
+
+            auto_token = node.IS_CHANGED("character.glb", "hero", 1.6, False, "auto_from_file_units")
+            manual_token = node.IS_CHANGED("character.glb", "hero", 1.6, False, "manual_target_height")
+            self.assertNotEqual(auto_token, manual_token)
+            self.assertNotEqual(
+                node.IS_CHANGED("character.glb", "hero", 1.6, False),
+                node.IS_CHANGED("character.glb", "hero", 2.0, False),
+            )
 
             before = node.IS_CHANGED("character.glb", "hero", 1.6, False)
             source.write_bytes(b"changed source")
@@ -113,6 +136,13 @@ class CacheBehaviorTests(unittest.TestCase):
 
             node.run("character.glb", "hero", 2.0, False)
             self.assertEqual(len(calls), 6)
+
+    def test_blender_converter_measures_evaluated_height_and_has_safe_fallback(self):
+        source = (REPO_ROOT / "scripts" / "mesh_to_morphgs.py").read_text(encoding="utf-8")
+        self.assertIn("evaluated_get(depsgraph)", source)
+        self.assertIn("effective_target_height = detected_height_m", source)
+        self.assertIn("effective_target_height = target_height", source)
+        self.assertIn('"detected_height_m": detected_height_m', source)
 
     def test_video_cache_tracks_max_frames_and_clears_old_frames(self):
         source = self.input_dir / "motion.mp4"
@@ -144,6 +174,10 @@ class CacheBehaviorTests(unittest.TestCase):
             node.run("motion.mp4", "scene", False, "sv4d2.safetensors", True, 12, False)
             node.run("motion.mp4", "scene", False, "sv4d2.safetensors", True, 12, False)
             self.assertEqual(len(calls), 2)
+            self.assertNotEqual(
+                node.IS_CHANGED("motion.mp4", "scene", False, "sv4d2.safetensors", True, 12, False),
+                node.IS_CHANGED("motion.mp4", "scene", False, "sv4d2.safetensors", True, 24, False),
+            )
 
             stale = Path(self.nodes.config.MORPHGS_HOME) / "demo" / "processed_videos" / "scene" / "view_0" / "color" / "999.png"
             stale.write_bytes(b"stale")

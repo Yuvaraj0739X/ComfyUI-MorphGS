@@ -32,6 +32,11 @@
           "name": "log",
           "type": "STRING",
           "links": []
+        },
+        {
+          "name": "detected_height_m",
+          "type": "FLOAT",
+          "links": []
         }
       ],
       "properties": {
@@ -41,7 +46,8 @@
         "",
         "my_character",
         1.6,
-        false
+        false,
+        "auto_from_file_units"
       ]
     },
     {

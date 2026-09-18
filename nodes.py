@@ -191,11 +191,19 @@ class MorphGSPreprocessCharacter:
                 "character_name": ("STRING", {"default": "my_character"}),
                 "target_height": ("FLOAT", {"default": 1.6, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
+                "height_mode": (["auto_from_file_units", "manual_target_height"], {
+                    "default": "auto_from_file_units",
+                    "tooltip": (
+                        "Auto measures the imported rigged mesh in Blender and preserves its physical "
+                        "height when the file units are plausible. target_height remains the fallback "
+                        "for missing/broken units, or the exact value used in manual mode."
+                    ),
+                }),
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("character_name", "log")
+    RETURN_TYPES = ("STRING", "STRING", "FLOAT")
+    RETURN_NAMES = ("character_name", "log", "detected_height_m")
     FUNCTION = "run"
     CATEGORY = CATEGORY
     OUTPUT_NODE = True  # Lets this run (and its result be visible) standalone before it's
@@ -204,11 +212,22 @@ class MorphGSPreprocessCharacter:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, character_source_path, character_name, target_height, force_reprocess):
-        return _input_change_token(character_source_path, force_reprocess)
+    def IS_CHANGED(cls, character_source_path, character_name, target_height, force_reprocess,
+                   height_mode="auto_from_file_units"):
+        if force_reprocess:
+            return float("NaN")
+        return json.dumps({
+            "source": _input_change_token(character_source_path, False),
+            "character_name": character_name,
+            "target_height": float(target_height),
+            "height_mode": height_mode,
+        }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, character_source_path, character_name, target_height, force_reprocess):
+    def run(self, character_source_path, character_name, target_height, force_reprocess,
+            height_mode="auto_from_file_units"):
         log = []
+        if height_mode not in ("auto_from_file_units", "manual_target_height"):
+            raise ValueError(f"Unsupported height_mode: {height_mode!r}")
         source_selection = character_source_path
         character_source_path = _resolve_input_path(source_selection)
         character_name = _safe_stage_name(character_name, "character_name")
@@ -220,6 +239,7 @@ class MorphGSPreprocessCharacter:
             "source": source_selection,
             "source_signature": _path_signature(character_source_path),
             "target_height": float(target_height),
+            "height_mode": height_mode,
         }
 
         ext = os.path.splitext(character_source_path)[1].lower()
@@ -245,7 +265,7 @@ class MorphGSPreprocessCharacter:
                 log.append(f"Copied {ext} source into {pipeline_src_path}")
                 out = run_blender_script(
                     node_script_path("mesh_to_morphgs.py"),
-                    [pipeline_src_path, char_dir, target_height],
+                    [pipeline_src_path, char_dir, target_height, height_mode],
                     timeout=300,
                 )
                 log.append(out)
@@ -271,7 +291,25 @@ class MorphGSPreprocessCharacter:
         else:
             log.append("Character source and settings match the completed on-disk cache; skipping preprocessing")
 
-        return (character_name, "\n".join(log))
+        detected_height = 0.0
+        conversion_meta = os.path.join(char_dir, "rigging", "conversion_meta.json")
+        try:
+            with open(conversion_meta, "r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            detected_height = float(metadata.get("detected_height_m", metadata.get("target_height", 0.0)))
+            effective_height = float(metadata.get("target_height", detected_height))
+            decision = metadata.get("height_decision", height_mode)
+            log.append(
+                f"Height: detected {detected_height:.4f} m; using {effective_height:.4f} m "
+                f"({decision})"
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            log.append(
+                "Height metadata is unavailable (expected for an already-prepared folder); "
+                "the prepared mesh scale was preserved"
+            )
+
+        return (character_name, "\n".join(log), detected_height)
 
 
 _SV4D_CHECKPOINTS = {
@@ -703,7 +741,16 @@ class MorphGSPreprocessVideo:
     @classmethod
     def IS_CHANGED(cls, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
                    force_reprocess):
-        return _input_change_token(video_path, force_reprocess)
+        if force_reprocess:
+            return float("NaN")
+        return json.dumps({
+            "source": _input_change_token(video_path, False),
+            "scene_name": scene_name,
+            "already_masked": bool(already_masked),
+            "sv4d_mode": sv4d_mode,
+            "fastmode": bool(fastmode),
+            "max_frames": int(max_frames),
+        }, sort_keys=True, separators=(",", ":"))
 
     def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
             force_reprocess):
