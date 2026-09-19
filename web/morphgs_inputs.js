@@ -13,6 +13,9 @@ const INPUT_NODE_CONFIG = {
         route: "/morphgs/input/videos",
         button: "Upload video",
         accept: ".mp4,.mov,.avi,.mkv,.webm,video/*",
+        extraWidget: "sv4d_mode",
+        extraRoute: "/morphgs/models/sv4d",
+        refreshButton: "Refresh inputs/checkpoints",
     },
 };
 
@@ -20,13 +23,16 @@ function migrateLegacyWidgetValues(nodeData, config) {
     const values = config?.widgets_values;
     if (!Array.isArray(values)) return;
 
-    // Older workflows stored a manually entered name directly after the source picker.
-    // ComfyUI serializes widget values by position, so remove that obsolete value before
-    // the framework maps it into the current target_height/already_masked widget.
-    if (nodeData.name === "MorphGSPreprocessCharacter" &&
-        typeof values[1] === "string" && typeof values[2] === "number" &&
-        typeof values[3] === "boolean") {
-        config.widgets_values = [values[0], values[2], values[3], ...values.slice(4)];
+    // Character height is now always detected automatically. Collapse both the pre-2.7
+    // [source, name, target_height, force, height_mode] layout and the 2.7
+    // [source, target_height, force, height_mode] layout to [source, force].
+    if (nodeData.name === "MorphGSPreprocessCharacter") {
+        if (typeof values[1] === "string" && typeof values[2] === "number" &&
+            typeof values[3] === "boolean") {
+            config.widgets_values = [values[0], values[3]];
+        } else if (typeof values[1] === "number" && typeof values[2] === "boolean") {
+            config.widgets_values = [values[0], values[2]];
+        }
     }
     if (nodeData.name === "MorphGSPreprocessVideo" &&
         typeof values[1] === "string" && typeof values[2] === "boolean") {
@@ -70,6 +76,10 @@ function addInputControls(node, config) {
     const refresh = async () => {
         try {
             await refreshOptions(sourceWidget, config.route);
+            if (config.extraWidget && config.extraRoute) {
+                const extraWidget = node.widgets?.find((widget) => widget.name === config.extraWidget);
+                if (extraWidget) await refreshOptions(extraWidget, config.extraRoute);
+            }
             redraw();
         } catch (error) {
             alert(error.message || String(error));
@@ -95,7 +105,7 @@ function addInputControls(node, config) {
         fileInput.click();
     });
     uploadButton.options.serialize = false;
-    const refreshButton = node.addWidget("button", "Refresh input list", null, refresh);
+    const refreshButton = node.addWidget("button", config.refreshButton || "Refresh input list", null, refresh);
     refreshButton.options.serialize = false;
 
     const originalRemoved = node.onRemoved;

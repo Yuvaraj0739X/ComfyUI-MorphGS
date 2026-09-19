@@ -65,8 +65,8 @@ class CacheBehaviorTests(unittest.TestCase):
         checkpoint.write_bytes(b"checkpoint")
         self.folder_paths.get_filename_list = lambda _name: ["sv4d2.safetensors"]
         self.assertEqual(self.nodes._sv4d_checkpoint_options(), ["sv4d2.safetensors"])
-        remote = self.nodes.MorphGSPreprocessVideo.INPUT_TYPES()["required"]["sv4d_mode"][1]["remote"]
-        self.assertEqual(remote["route"], "/morphgs/models/sv4d")
+        options = self.nodes.MorphGSPreprocessVideo.INPUT_TYPES()["required"]["sv4d_mode"][1]
+        self.assertNotIn("remote", options)
 
     def test_arap_joint_labels_follow_cached_sample_indices(self):
         source = (REPO_ROOT / "morphgs_src" / "src" / "model" / "MorphGS.py").read_text(encoding="utf-8")
@@ -107,35 +107,28 @@ class CacheBehaviorTests(unittest.TestCase):
 
         node = self.nodes.MorphGSPreprocessCharacter()
         input_types = node.INPUT_TYPES()["required"]
-        self.assertEqual(input_types["height_mode"][0][0], "auto_from_file_units")
+        self.assertNotIn("height_mode", input_types)
+        self.assertNotIn("target_height", input_types)
         self.assertEqual(node.RETURN_NAMES[-1], "detected_height_m")
         with mock.patch.object(self.nodes, "run_blender_script", fake_blender), mock.patch.object(
             self.nodes, "run_python", fake_python
         ):
-            result = node.run("character.glb", 1.6, False)
+            result = node.run("character.glb", False)
             self.assertEqual(result[0], "character")
             self.assertAlmostEqual(result[2], 1.82)
             self.assertIn("detected 1.8200 m", result[1])
             self.assertEqual(calls[0][2], "auto_from_file_units")
-            node.run("character.glb", 1.6, False)
+            node.run("character.glb", False)
             self.assertEqual(len(calls), 2)
 
-            auto_token = node.IS_CHANGED("character.glb", 1.6, False, "auto_from_file_units")
-            manual_token = node.IS_CHANGED("character.glb", 1.6, False, "manual_target_height")
-            self.assertNotEqual(auto_token, manual_token)
-            self.assertNotEqual(
-                node.IS_CHANGED("character.glb", 1.6, False),
-                node.IS_CHANGED("character.glb", 2.0, False),
-            )
-
-            before = node.IS_CHANGED("character.glb", 1.6, False)
+            before = node.IS_CHANGED("character.glb", False)
             source.write_bytes(b"changed source")
-            after = node.IS_CHANGED("character.glb", 1.6, False)
+            after = node.IS_CHANGED("character.glb", False)
             self.assertNotEqual(before, after)
-            node.run("character.glb", 1.6, False)
+            node.run("character.glb", False)
             self.assertEqual(len(calls), 4)
 
-            node.run("character.glb", 2.0, False)
+            node.run("character.glb", True)
             self.assertEqual(len(calls), 6)
 
         self.assertEqual(self.nodes._stage_name_from_input("avatars/My Hero.glb", "character_name"), "My_Hero")
@@ -181,8 +174,9 @@ class CacheBehaviorTests(unittest.TestCase):
             mock.patch.object(self.nodes, "_disable_xformers_in_sv4d_config", lambda *_args: "patched"),
             mock.patch.object(self.nodes, "_chunk_sgm_attention_batches", lambda: "patched"),
             mock.patch.object(self.nodes, "_align_vae_decode_dtype", lambda: "patched"),
+            mock.patch.object(self.nodes, "_require_cuda_for_sv4d", lambda: "SV4D/DINO device: test GPU"),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             node.run("motion.mp4", False, "sv4d2.safetensors", True, 12, False)
             node.run("motion.mp4", False, "sv4d2.safetensors", True, 12, False)
             self.assertEqual(len(calls), 2)

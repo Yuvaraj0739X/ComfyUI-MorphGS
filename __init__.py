@@ -58,7 +58,7 @@ _register_model_folders()
 
 
 def _register_input_routes():
-    """Refreshable input-file lists for ComfyUI frontends that support remote combo options."""
+    """Runtime scans used by this package's explicit input/checkpoint refresh buttons."""
     try:
         from aiohttp import web
         from server import PromptServer

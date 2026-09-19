@@ -20,6 +20,8 @@ from .process_utils import node_script_path, run_blender_script, run_python, sub
 
 CATEGORY = "MorphGS"
 _CACHE_MANIFEST = ".morphgs_cache.json"
+_AUTO_HEIGHT_FALLBACK_M = 1.6
+_AUTO_HEIGHT_MODE = "auto_from_file_units"
 
 
 def _safe_stage_name(value, label):
@@ -199,14 +201,11 @@ class MorphGSPreprocessCharacter:
                 "character_source_path": (options, {
                     "tooltip": "Choose a rigged character already under ComfyUI/input, or use Upload character.",
                 }),
-                "target_height": ("FLOAT", {"default": 1.6, "min": 0.1, "max": 10.0, "step": 0.1}),
-                "force_reprocess": ("BOOLEAN", {"default": False}),
-                "height_mode": (["auto_from_file_units", "manual_target_height"], {
-                    "default": "auto_from_file_units",
+                "force_reprocess": ("BOOLEAN", {
+                    "default": False,
                     "tooltip": (
-                        "Auto measures the imported rigged mesh in Blender and preserves its physical "
-                        "height when the file units are plausible. target_height remains the fallback "
-                        "for missing/broken units, or the exact value used in manual mode."
+                        "Normally leave off: completed outputs are reused when the source and settings "
+                        "match. Turn on only to discard that on-disk cache and rebuild the character."
                     ),
                 }),
             }
@@ -222,21 +221,17 @@ class MorphGSPreprocessCharacter:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, character_source_path, target_height, force_reprocess,
-                   height_mode="auto_from_file_units"):
+    def IS_CHANGED(cls, character_source_path, force_reprocess):
         if force_reprocess:
             return float("NaN")
         return json.dumps({
             "source": _input_change_token(character_source_path, False),
-            "target_height": float(target_height),
-            "height_mode": height_mode,
+            "height_policy": _AUTO_HEIGHT_MODE,
+            "fallback_height_m": _AUTO_HEIGHT_FALLBACK_M,
         }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, character_source_path, target_height, force_reprocess,
-            height_mode="auto_from_file_units"):
+    def run(self, character_source_path, force_reprocess):
         log = []
-        if height_mode not in ("auto_from_file_units", "manual_target_height"):
-            raise ValueError(f"Unsupported height_mode: {height_mode!r}")
         source_selection = character_source_path
         character_source_path = _resolve_input_path(source_selection)
         character_name = _stage_name_from_input(source_selection, "character_name")
@@ -244,11 +239,11 @@ class MorphGSPreprocessCharacter:
         char_dir = os.path.join(characters_root, character_name)
         manifest_path = os.path.join(char_dir, _CACHE_MANIFEST)
         desired_manifest = {
-            "schema": 1,
+            "schema": 2,
             "source": source_selection,
             "source_signature": _path_signature(character_source_path),
-            "target_height": float(target_height),
-            "height_mode": height_mode,
+            "height_policy": _AUTO_HEIGHT_MODE,
+            "fallback_height_m": _AUTO_HEIGHT_FALLBACK_M,
         }
 
         ext = os.path.splitext(character_source_path)[1].lower()
@@ -274,7 +269,7 @@ class MorphGSPreprocessCharacter:
                 log.append(f"Copied {ext} source into {pipeline_src_path}")
                 out = run_blender_script(
                     node_script_path("mesh_to_morphgs.py"),
-                    [pipeline_src_path, char_dir, target_height, height_mode],
+                    [pipeline_src_path, char_dir, _AUTO_HEIGHT_FALLBACK_M, _AUTO_HEIGHT_MODE],
                     timeout=300,
                 )
                 log.append(out)
@@ -307,7 +302,7 @@ class MorphGSPreprocessCharacter:
                 metadata = json.load(handle)
             detected_height = float(metadata.get("detected_height_m", metadata.get("target_height", 0.0)))
             effective_height = float(metadata.get("target_height", detected_height))
-            decision = metadata.get("height_decision", height_mode)
+            decision = metadata.get("height_decision", _AUTO_HEIGHT_MODE)
             log.append(
                 f"Height: detected {detected_height:.4f} m; using {effective_height:.4f} m "
                 f"({decision})"
@@ -326,6 +321,21 @@ _SV4D_CHECKPOINTS = {
     "sv4d2_8views": ("stabilityai/sv4d2.0", "sv4d2_8views.safetensors"),
     "sp4d": ("stabilityai/sp4d", "sp4d.safetensors"),
 }
+
+
+def _require_cuda_for_sv4d():
+    """SV4D/DINO are GPU stages; never let a broken CUDA setup crawl on CPU unnoticed."""
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "MorphGS SV4D preprocessing requires a working CUDA GPU, but PyTorch reports "
+            "torch.cuda.is_available() == False. The earlier FFmpeg/rembg preparation may use "
+            "CPU, but SV4D will not be allowed to fall back to CPU. Check the ComfyUI console "
+            "and its PyTorch/CUDA installation."
+        )
+    device = torch.cuda.current_device()
+    return f"SV4D/DINO device: cuda:{device} ({torch.cuda.get_device_name(device)})"
 
 
 def _sv4d_checkpoint_options():
@@ -697,7 +707,8 @@ class MorphGSPreprocessVideo:
       - sp4d: https://huggingface.co/stabilityai/sp4d
     and place it in your ComfyUI models/diffusion_models folder. Falls back to mode names
     when folder_paths can't be listed (e.g. the Comfy Registry's isolated node scanner, which
-    has no `folder_paths` module at all).
+    has no `folder_paths` module at all). The web extension's explicit refresh button rescans
+    this list at runtime; it does not refresh after each generation.
 
     max_frames caps how much of the clip SV4D synthesises, 0 meaning the whole thing. SV4D is
     by far the most expensive stage here -- it diffuses 12 frames at a time, so cost scales
@@ -717,18 +728,26 @@ class MorphGSPreprocessVideo:
                 "video_path": (video_options, {
                     "tooltip": "Choose a video already under ComfyUI/input, or use Upload video.",
                 }),
-                "already_masked": ("BOOLEAN", {"default": False}),
+                "already_masked": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "Enable only when the clip already has MorphGS-ready masking/framing. "
+                        "This skips rembg segmentation (the main CPU/ONNX preparation stage)."
+                    ),
+                }),
                 "sv4d_mode": (sv4d_options, {
                     "default": sv4d_options[0],
-                    "remote": {
-                        "route": "/morphgs/models/sv4d",
-                        "refresh_button": True,
-                        "control_after_refresh": "first",
-                    },
+                    "tooltip": "SV4D/SP4D checkpoint scanned from ComfyUI models/diffusion_models and fallback model folders.",
                 }),
                 "fastmode": ("BOOLEAN", {"default": True}),
                 "max_frames": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 12}),
-                "force_reprocess": ("BOOLEAN", {"default": False}),
+                "force_reprocess": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "Normally leave off: completed outputs are reused when the video, checkpoint, "
+                        "and settings match. Turn on only to discard them and run masking + SV4D again."
+                    ),
+                }),
             }
         }
 
@@ -801,6 +820,7 @@ class MorphGSPreprocessVideo:
         )
 
         if force_reprocess or not cache_valid:
+            log.append(_require_cuda_for_sv4d())
             _reset_stage_dir(scene_dir, videos_root)
             _reset_stage_dir(processed_dir, processed_root)
             os.makedirs(scene_dir, exist_ok=True)

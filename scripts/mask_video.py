@@ -26,10 +26,22 @@ def extract_frames(video_path, raw_dir):
 
 
 def segment_and_composite(raw_dir, frame_files, out_dir, out_size, image_frame_ratio, alpha_thresh=30):
+    import onnxruntime as ort
     from rembg import remove, new_session
 
     os.makedirs(out_dir, exist_ok=True)
-    session = new_session("u2net")
+    available = ort.get_available_providers()
+    requested = (["CUDAExecutionProvider", "CPUExecutionProvider"]
+                 if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"])
+    session = new_session("u2net", providers=requested)
+    active = session.inner_session.get_providers()
+    print(f"rembg/ONNX providers: available={available}; active={active}")
+    if "CUDAExecutionProvider" in available and "CUDAExecutionProvider" not in active:
+        print(
+            "WARNING: ONNX Runtime advertised CUDA but rembg fell back to CPU. "
+            "Check the CUDA/cuDNN runtime required by onnxruntime-gpu.",
+            file=sys.stderr,
+        )
 
     rgba_cache = {}
     bboxes = []

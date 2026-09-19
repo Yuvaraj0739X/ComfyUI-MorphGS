@@ -30,7 +30,7 @@ Stability AI's `generative-models` (the SV4D/SP4D code behind MorphGS: Preproces
 cloned into the bundled MorphGS tree because MorphGS imports its `scripts/` helpers from a
 checkout, not from an installed package. There is deliberately no node that downloads the
 SV4D/SP4D checkpoint: download it from Hugging Face (stabilityai/sv4d2.0 or stabilityai/sp4d)
-into ComfyUI's models/sv4d folder, the same way every other checkpoint is handled. The example
+into ComfyUI's models/diffusion_models folder, the same way every other checkpoint is handled. The example
 workflow declares those files in its node metadata, so ComfyUI's own missing-models dialog
 offers the download link when the workflow is loaded.
 
@@ -224,7 +224,8 @@ def ensure_requirements():
 def ensure_rembg_backend():
     """rembg (used by this package's own mask_video.py) needs an onnxruntime backend; a bare
     `pip install rembg` succeeds and then fails at first use with "No onnxruntime backend
-    found". requirements.txt asks for rembg[cpu]; this is the explicit guarantee."""
+    found". Preserve an existing onnxruntime-gpu install; add the CPU backend only when the
+    ComfyUI environment has no ONNX Runtime at all."""
     rc, _ = _python_subprocess("import onnxruntime")
     if rc == 0:
         return

@@ -11,7 +11,7 @@
 # this package's own nodes and helper scripts
 numpy
 opencv-python
-rembg[cpu]
+rembg
 Pillow
 scipy
 pyyaml

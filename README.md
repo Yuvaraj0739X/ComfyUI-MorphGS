@@ -104,8 +104,8 @@ Only two environment variables, both optional:
 
 | Node | Does |
 |---|---|
-| **MorphGS: Preprocess Character** | Upload a rigged `.fbx`/`.glb`/`.gltf` directly with **Upload character**, or choose one already under ComfyUI's `input/` folder. **Refresh input list** scans that folder only when you request it; uploading refreshes and selects the new file immediately. The character name is derived from the file name automatically. `height_mode=auto_from_file_units` uses headless Blender to measure the evaluated rigged mesh and preserves its imported physical height when it falls in the plausible 0.1–10 m range. The existing `target_height` becomes a safety fallback for broken/missing units; choose `manual_target_height` to force it. |
-| **MorphGS: Preprocess Video** | Upload an `.mp4`/`.mov`/`.avi`/`.mkv`/`.webm` directly with **Upload video**, or choose one already under `input/`. Its scene name is derived automatically from the video filename. The list scans on upload or an explicit **Refresh input list**, never after every queue/generation. Segments the clip onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` scans ComfyUI's standard `models/diffusion_models` folder first, with `models/sv4d`, `models/checkpoints`, and MorphGS's own `generative-models/checkpoints` as fallbacks. |
+| **MorphGS: Preprocess Character** | Upload a rigged `.fbx`/`.glb`/`.gltf` directly with **Upload character**, or choose one already under ComfyUI's `input/` folder. **Refresh input list** scans that folder only when you request it; uploading refreshes and selects the new file immediately. The character name is derived from the file name automatically. Headless Blender always measures the evaluated rigged mesh and preserves its imported physical height when the file units are plausible; there are no redundant manual height controls. |
+| **MorphGS: Preprocess Video** | Upload an `.mp4`/`.mov`/`.avi`/`.mkv`/`.webm` directly with **Upload video**, or choose one already under `input/`. Its scene name is derived automatically from the video filename. **Refresh inputs/checkpoints** rescans the input and model folders only when requested, never after every queue/generation. Segments the clip onto a white square background if needed, then runs SV4D/SP4D multi-view synthesis + source-side feature extraction. `sv4d_mode` scans ComfyUI's standard `models/diffusion_models` folder first, with `models/sv4d`, `models/checkpoints`, and MorphGS's own `generative-models/checkpoints` as fallbacks. |
 | **MorphGS: Train & Render** | Registers the `<scene>_to_<character>` experiment, trains it, and returns the rendered result both as a file path and as an `IMAGE` batch for in-graph preview. `seed` has the standard ComfyUI seed widget (fixed/increment/decrement/randomize) and controls MorphGS's own training-time randomness. |
 | **MorphGS: Export Animated Mesh** | Turns a trained experiment into a real, standalone animated 3D asset (`.glb`/`.fbx`) instead of only a rendered video. Replays the trained `AnimationField` checkpoint frame-by-frame to get absolute per-joint transforms, then bakes them onto a skinned mesh in headless Blender: onto the character's *original* rigged file when one is available (which also carries over that file's own materials/textures automatically), or -- for characters with no such file on disk (e.g. MorphGS's own bundled demo characters) -- onto a fresh armature built directly from `mesh.obj` + the RigNet-format rig file's own joint positions and per-vertex skin weights, first re-resolving those weights (`resolve_skinning_weights.py`) exactly as MorphGS's own `Rig` class would for that character's config (some characters' configs apply heat-diffusion smoothing to the raw rig-file weights before training), and reading UVs plus a `.mtl`-referenced texture image if present (or, for characters with no UV/material data at all -- like MorphGS's own bundled `spot` -- per-vertex colors, if `mesh.obj` uses trimesh's "v x y z r g b" extension) so the exported mesh keeps its appearance too. Both `.glb` (self-contained, textures embedded) and `.fbx` (textures embedded via `embed_textures`) carry textures through when the source has them. Shows the result directly on the node itself as soon as it finishes (no separate node needed for that), **and** also outputs `preview_path` -- the same output-dir-relative string ComfyUI-Hunyuan3DWrapper's own `Hy3DExportMesh` returns -- so you can additionally wire it into ComfyUI's native **Preview 3D & Animation** (`Preview3D`) node, exactly like Hunyuan3DWrapper's own example workflow does, if you want that as a separate, movable node in the graph. |
 
@@ -122,13 +122,23 @@ on ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI re
 training here can take hours. This is what actually lets you restart ComfyUI mid-pipeline
 without losing finished work. The manifests propagate through Train & Render and Export:
 changing a source file, preprocessing setting, checkpoint, training seed, or trained deform
-checkpoint invalidates the affected downstream cache automatically. The force switches remain
-available for an unconditional rerun.
+checkpoint invalidates the affected downstream cache automatically. Normally leave
+`force_reprocess` off; turn it on only to discard an otherwise valid preprocessing cache and
+rebuild after corrupt/partial outputs or a code/model behavior change the manifest cannot detect.
 
 Automatic height is exact for the geometry and transforms Blender imports, and glTF defines its
 linear units as metres. It cannot infer real-world metres perfectly from an incorrectly authored
-FBX that has no trustworthy unit metadata. For that reason, implausible automatic measurements
-fall back to `target_height` and are called out in the log instead of silently applying a bad scale.
+FBX that has no trustworthy unit metadata. Implausible measurements therefore use an internal
+1.6 m safety fallback and are called out in the log; that implementation detail is not duplicated
+as a normal user control.
+
+Video preparation contains two different workloads. FFmpeg decoding/encoding, image compositing,
+and rembg background removal may use CPU. rembg automatically requests CUDA when a working
+`onnxruntime-gpu` provider is already installed and prints the provider it actually activated;
+the installer preserves that backend and supplies CPU ONNX Runtime only when no backend exists.
+SV4D and DINO are the expensive neural stages and are required to run on CUDA—the node reports
+the exact GPU and stops with a clear error instead of silently attempting them on CPU. Enable
+`already_masked` only for a correctly framed/masked input to skip rembg entirely.
 
 Every node is also an `OUTPUT_NODE`, so any one of them can be queued and will actually execute
 on its own while you're building out a graph step by step -- without this, ComfyUI's execution
@@ -151,8 +161,7 @@ whatever checkpoint file you've actually placed:
 0. Download an SV4D/SP4D checkpoint from Hugging Face into `models/diffusion_models` (one-time, only if
    you'll use Preprocess Video — see Installation above).
 1. **MorphGS: Preprocess Character** — upload or choose your rigged mesh (`.fbx`/`.glb`). Its
-   file name becomes the `character_name`; leave `height_mode` on automatic unless the source
-   has incorrect units.
+   file name becomes the `character_name`; height is detected automatically in headless Blender.
 2. **MorphGS: Preprocess Video** — upload or choose your source clip. Its file name becomes the
    `scene_name`, then pick an `sv4d_mode`.
 3. **MorphGS: Train & Render** — pass the `scene_name` and `character_name` from the two
