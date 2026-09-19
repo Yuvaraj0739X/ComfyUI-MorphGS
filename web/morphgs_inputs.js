@@ -38,6 +38,16 @@ function migrateLegacyWidgetValues(nodeData, config) {
         typeof values[1] === "string" && typeof values[2] === "boolean") {
         config.widgets_values = [values[0], ...values.slice(2)];
     }
+    // Retain every meaningful setting while removing the retired trailing cache-bypass
+    // toggles. Train also serializes the seed control mode (for example "fixed").
+    if (nodeData.name === "MorphGSTrainAndRender" && values.length >= 6 &&
+        typeof values.at(-1) === "boolean") {
+        config.widgets_values = values.slice(0, -1);
+    }
+    if (nodeData.name === "MorphGSExportAnimatedMesh" && values.length >= 5 &&
+        typeof values.at(-1) === "boolean") {
+        config.widgets_values = values.slice(0, -1);
+    }
 }
 
 async function uploadToComfyInput(file) {
@@ -123,13 +133,18 @@ app.registerExtension({
     name: "MorphGS.InputUpload",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const config = INPUT_NODE_CONFIG[nodeData.name];
+        const migratable = new Set([
+            "MorphGSPreprocessCharacter", "MorphGSPreprocessVideo",
+            "MorphGSTrainAndRender", "MorphGSExportAnimatedMesh",
+        ]);
+        if (migratable.has(nodeData.name)) {
+            const originalConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (serializedNode) {
+                migrateLegacyWidgetValues(nodeData, serializedNode);
+                return originalConfigure?.apply(this, arguments);
+            };
+        }
         if (!config) return;
-
-        const originalConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function (serializedNode) {
-            migrateLegacyWidgetValues(nodeData, serializedNode);
-            return originalConfigure?.apply(this, arguments);
-        };
 
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {

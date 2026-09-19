@@ -870,15 +870,9 @@ class MorphGSTrainAndRender:
     preprocessing manifests, so a changed seed, character, video, or preprocessing setting
     automatically invalidates the corresponding training result.
 
-    force_retrain exists because the check below (skip training if the render already exists)
-    is deliberately a real, on-disk check, not ComfyUI's own in-memory result cache -- training
-    can take hours, and ComfyUI's own cache doesn't survive a restart, so relying on it alone
-    would mean losing hours of finished training the moment ComfyUI restarts. This disk check
-    is what actually lets you safely restart ComfyUI (or re-queue the same node while building
-    out the rest of the graph) without retraining from scratch. force_retrain=False is the
-    normal state; if it looks like every run is retraining anyway, check whether scene_name/
-    character_name/iterations actually stayed identical between runs -- any of those changing
-    points at a different output path that (correctly) doesn't exist yet.
+    Training uses a real on-disk manifest rather than only ComfyUI's in-memory result cache,
+    because training can take hours and must survive a ComfyUI restart. Changes to the source
+    preprocessing manifests, iteration count, or seed automatically invalidate it.
     """
 
     @classmethod
@@ -889,7 +883,6 @@ class MorphGSTrainAndRender:
                 "character_name": ("STRING", {"default": ""}),
                 "iterations": ("INT", {"default": 5000, "min": 100, "max": 100000, "step": 100}),
                 "seed": ("INT", {"default": 43, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
-                "force_retrain": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -910,9 +903,7 @@ class MorphGSTrainAndRender:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, scene_name, character_name, iterations, seed, force_retrain):
-        if force_retrain:
-            return float("NaN")
+    def IS_CHANGED(cls, scene_name, character_name, iterations, seed):
         try:
             scene_name = _safe_stage_name(scene_name, "scene_name")
             character_name = _safe_stage_name(character_name, "character_name")
@@ -924,7 +915,7 @@ class MorphGSTrainAndRender:
         except (OSError, ValueError):
             return float("NaN")
 
-    def run(self, scene_name, character_name, iterations, seed, force_retrain):
+    def run(self, scene_name, character_name, iterations, seed):
         log = []
         scene_name = _safe_stage_name(scene_name, "scene_name")
         character_name = _safe_stage_name(character_name, "character_name")
@@ -966,7 +957,7 @@ class MorphGSTrainAndRender:
                 f.write("{}\n")
             log.append(f"Created minimal experiment config at {config_path} (defaults from configs/base.yaml)")
 
-        if force_retrain or not cache_valid:
+        if not cache_valid:
             if os.path.isfile(manifest_path):
                 os.remove(manifest_path)
             out = run_python(
@@ -1071,7 +1062,6 @@ class MorphGSExportAnimatedMesh:
                 "character_name": ("STRING", {"default": ""}),
                 "iterations": ("INT", {"default": 5000, "min": 100, "max": 100000, "step": 100}),
                 "output_format": (["glb", "fbx"], {"default": "glb"}),
-                "force_reexport": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -1082,9 +1072,7 @@ class MorphGSExportAnimatedMesh:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, scene_name, character_name, iterations, output_format, force_reexport):
-        if force_reexport:
-            return float("NaN")
+    def IS_CHANGED(cls, scene_name, character_name, iterations, output_format):
         try:
             experiment = (
                 f"{_safe_stage_name(scene_name, 'scene_name')}_to_"
@@ -1104,7 +1092,7 @@ class MorphGSExportAnimatedMesh:
         except (OSError, ValueError):
             return float("NaN")
 
-    def run(self, scene_name, character_name, iterations, output_format, force_reexport):
+    def run(self, scene_name, character_name, iterations, output_format):
         log = []
         scene_name = _safe_stage_name(scene_name, "scene_name")
         character_name = _safe_stage_name(character_name, "character_name")
@@ -1218,7 +1206,7 @@ class MorphGSExportAnimatedMesh:
             f"normalization) at {fps:.3f} fps (from {video_dir}/rgb.mp4)"
         )
 
-        if force_reexport or not export_cache_valid:
+        if not export_cache_valid:
             if os.path.isfile(export_manifest_path):
                 os.remove(export_manifest_path)
             os.makedirs(render_dir, exist_ok=True)

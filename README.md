@@ -115,16 +115,15 @@ ComfyUI-HY-Motion1 use for their own helper models). SV4D has no native ComfyUI 
 architecture (unlike SV3D/SVD), so it can't go through the built-in Load Checkpoint node;
 Preprocess Video loads it from `models/diffusion_models` itself.
 
-Each preprocessing node caches its outputs **on disk** with a source-and-settings manifest and
-skips re-running only when that manifest still matches
-(unless `force_reprocess`/`force_retrain`/`force_reexport` is set) -- deliberately not relying
-on ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI restart and
-training here can take hours. This is what actually lets you restart ComfyUI mid-pipeline
-without losing finished work. The manifests propagate through Train & Render and Export:
+Each pipeline stage caches its outputs **on disk** with a source-and-settings manifest and
+skips re-running only when that manifest still matches. This deliberately does not rely on
+ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI restart and training
+here can take hours. This is what actually lets you restart ComfyUI mid-pipeline without losing
+finished work. The manifests propagate through Train & Render and Export:
 changing a source file, preprocessing setting, checkpoint, training seed, or trained deform
-checkpoint invalidates the affected downstream cache automatically. Normally leave
-`force_reprocess` off; turn it on only to discard an otherwise valid preprocessing cache and
-rebuild after corrupt/partial outputs or a code/model behavior change the manifest cannot detect.
+checkpoint invalidates the affected downstream cache automatically. Train and Export follow the
+same uncluttered model as the reference 3D node packs and need no force toggles. Preprocessing
+retains `force_reprocess` only as a recovery control for its external staged input directories.
 
 Automatic height is exact for the geometry and transforms Blender imports, and glTF defines its
 linear units as metres. It cannot infer real-world metres perfectly from an incorrectly authored

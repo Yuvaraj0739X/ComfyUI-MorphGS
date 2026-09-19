@@ -149,6 +149,15 @@ class CacheBehaviorTests(unittest.TestCase):
         self.assertIn("migrateLegacyWidgetValues", frontend)
         self.assertNotIn("file_upload", (REPO_ROOT / "nodes.py").read_text(encoding="utf-8"))
 
+    def test_train_and_export_do_not_expose_force_cache_controls(self):
+        train_inputs = self.nodes.MorphGSTrainAndRender.INPUT_TYPES()["required"]
+        export_inputs = self.nodes.MorphGSExportAnimatedMesh.INPUT_TYPES()["required"]
+        self.assertNotIn("force_retrain", train_inputs)
+        self.assertNotIn("force_reexport", export_inputs)
+        frontend = (REPO_ROOT / "web" / "morphgs_inputs.js").read_text(encoding="utf-8")
+        self.assertIn('nodeData.name === "MorphGSTrainAndRender"', frontend)
+        self.assertIn('nodeData.name === "MorphGSExportAnimatedMesh"', frontend)
+
     def test_video_cache_tracks_max_frames_and_clears_old_frames(self):
         source = self.input_dir / "motion.mp4"
         source.write_bytes(b"video")

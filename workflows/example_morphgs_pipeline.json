@@ -164,8 +164,7 @@
         "my_character",
         5000,
         43,
-        "fixed",
-        false
+        "fixed"
       ]
     },
     {
@@ -221,8 +220,7 @@
         "my_scene",
         "my_character",
         5000,
-        "glb",
-        false
+        "glb"
       ]
     },
     {
