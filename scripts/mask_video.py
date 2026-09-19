@@ -11,15 +11,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import numpy as np
 from PIL import Image
 
 
-def extract_frames(video_path, raw_dir):
+def extract_frames(video_path, raw_dir, max_frames=0):
     os.makedirs(raw_dir, exist_ok=True)
+    limit = ["-frames:v", str(max_frames)] if max_frames > 0 else []
     subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, os.path.join(raw_dir, "%05d.png")],
+        ["ffmpeg", "-y", "-i", video_path, *limit, "-compression_level", "1",
+         os.path.join(raw_dir, "%05d.png")],
         check=True, capture_output=True,
     )
     return sorted(os.listdir(raw_dir))
@@ -31,11 +34,18 @@ def segment_and_composite(raw_dir, frame_files, out_dir, out_size, image_frame_r
 
     os.makedirs(out_dir, exist_ok=True)
     available = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available:
+        # Recent ORT can load its own pip CUDA/cuDNN libraries, independently of torch's
+        # CUDA major version (the local ComfyUI may still use a CUDA 11 torch build).
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls(directory="")
+        else:
+            import torch  # Load compatible torch CUDA DLLs before older ORT sessions.
     requested = (["CUDAExecutionProvider", "CPUExecutionProvider"]
                  if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"])
     session = new_session("u2net", providers=requested)
     active = session.inner_session.get_providers()
-    print(f"rembg/ONNX providers: available={available}; active={active}")
+    print(f"[MorphGS] Background removal: available={available}; active={active}", flush=True)
     if "CUDAExecutionProvider" in available and "CUDAExecutionProvider" not in active:
         print(
             "WARNING: ONNX Runtime advertised CUDA but rembg fell back to CPU. "
@@ -43,15 +53,23 @@ def segment_and_composite(raw_dir, frame_files, out_dir, out_size, image_frame_r
             file=sys.stderr,
         )
 
-    rgba_cache = {}
+    if "CUDAExecutionProvider" not in active:
+        print("[MorphGS] Background removal is running on CPU; CUDA ONNX Runtime is unavailable.", flush=True)
+    started = time.perf_counter()
+    # Cache RGBA on disk instead of retaining the entire full-resolution clip in RAM.
+    # Long clips previously caused paging while SV4D waited for this stage to finish.
+    rgba_dir = os.path.join(raw_dir, "rgba")
+    os.makedirs(rgba_dir, exist_ok=True)
     bboxes = []
-    for fname in frame_files:
+    for index, fname in enumerate(frame_files, 1):
         img = Image.open(os.path.join(raw_dir, fname)).convert("RGB")
         rgba = remove(img, session=session)
-        rgba_cache[fname] = rgba
+        rgba.save(os.path.join(rgba_dir, fname), compress_level=1)
         alpha = np.array(rgba)[:, :, 3]
         ys, xs = np.where(alpha > alpha_thresh)
         bboxes.append((xs.min(), ys.min(), xs.max(), ys.max()) if len(xs) else None)
+        if index % 12 == 0 or index == len(frame_files):
+            print(f"[MorphGS] Background removal {index}/{len(frame_files)} ({time.perf_counter() - started:.1f}s)", flush=True)
 
     valid = [b for b in bboxes if b is not None]
     if not valid:
@@ -71,8 +89,10 @@ def segment_and_composite(raw_dir, frame_files, out_dir, out_size, image_frame_r
 
     white_bg = Image.new("RGB", (out_size, out_size), (255, 255, 255))
 
+    print("[MorphGS] CPU crop/compositing started", flush=True)
     for fname in frame_files:
-        rgba = rgba_cache[fname]
+        with Image.open(os.path.join(rgba_dir, fname)) as cached:
+            rgba = cached.copy()
         W, H = rgba.size
         pad_l = max(0, int(np.ceil(-crop_x0)))
         pad_t = max(0, int(np.ceil(-crop_y0)))
@@ -90,7 +110,7 @@ def segment_and_composite(raw_dir, frame_files, out_dir, out_size, image_frame_r
 
         canvas = white_bg.copy()
         canvas.paste(cropped, (0, 0), mask=cropped.split()[3])
-        canvas.save(os.path.join(out_dir, fname))
+        canvas.save(os.path.join(out_dir, fname), compress_level=1)
 
 
 def encode_video(frames_dir, out_path, fps):
@@ -117,6 +137,7 @@ def main():
     parser.add_argument("output_rgb_mp4")
     parser.add_argument("--size", type=int, default=1080)
     parser.add_argument("--ratio", type=float, default=0.9)
+    parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--skip-mask", action="store_true",
                          help="Video is already background-masked/square; just re-encode/copy into place.")
     args = parser.parse_args()
@@ -132,11 +153,14 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         raw_dir = os.path.join(tmp, "raw")
         comp_dir = os.path.join(tmp, "composited")
-        frame_files = extract_frames(args.input_video, raw_dir)
-        print(f"Extracted {len(frame_files)} frames")
+        started = time.perf_counter()
+        print("[MorphGS] CPU video decode started", flush=True)
+        frame_files = extract_frames(args.input_video, raw_dir, args.max_frames)
+        print(f"[MorphGS] Decoded {len(frame_files)} frames in {time.perf_counter() - started:.1f}s", flush=True)
         segment_and_composite(raw_dir, frame_files, comp_dir, args.size, args.ratio)
-        print("Segmentation + compositing done")
+        print("[MorphGS] Segmentation/compositing done; CPU video encode started", flush=True)
         encode_video(comp_dir, args.output_rgb_mp4, fps)
+        print(f"[MorphGS] Video preparation finished in {time.perf_counter() - started:.1f}s", flush=True)
 
     print(f"DONE: {args.output_rgb_mp4}")
 

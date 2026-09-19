@@ -95,9 +95,7 @@ def _reset_stage_dir(path, expected_parent):
         shutil.rmtree(path)
 
 
-def _input_change_token(selection, force_reprocess):
-    if force_reprocess:
-        return float("NaN")
+def _input_change_token(selection):
     try:
         path = _resolve_input_path(selection)
         return json.dumps(_path_signature(path), sort_keys=True, separators=(",", ":"))
@@ -201,13 +199,6 @@ class MorphGSPreprocessCharacter:
                 "character_source_path": (options, {
                     "tooltip": "Choose a rigged character already under ComfyUI/input, or use Upload character.",
                 }),
-                "force_reprocess": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": (
-                        "Normally leave off: completed outputs are reused when the source and settings "
-                        "match. Turn on only to discard that on-disk cache and rebuild the character."
-                    ),
-                }),
             }
         }
 
@@ -221,16 +212,14 @@ class MorphGSPreprocessCharacter:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, character_source_path, force_reprocess):
-        if force_reprocess:
-            return float("NaN")
+    def IS_CHANGED(cls, character_source_path):
         return json.dumps({
-            "source": _input_change_token(character_source_path, False),
+            "source": _input_change_token(character_source_path),
             "height_policy": _AUTO_HEIGHT_MODE,
             "fallback_height_m": _AUTO_HEIGHT_FALLBACK_M,
         }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, character_source_path, force_reprocess):
+    def run(self, character_source_path):
         log = []
         source_selection = character_source_path
         character_source_path = _resolve_input_path(source_selection)
@@ -260,7 +249,7 @@ class MorphGSPreprocessCharacter:
         )
         cache_valid = outputs_ready and _read_manifest(manifest_path) == desired_manifest
 
-        if force_reprocess or not cache_valid:
+        if not cache_valid:
             _reset_stage_dir(char_dir, characters_root)
             os.makedirs(char_dir, exist_ok=True)
             if is_mesh_file:
@@ -741,13 +730,6 @@ class MorphGSPreprocessVideo:
                 }),
                 "fastmode": ("BOOLEAN", {"default": True}),
                 "max_frames": ("INT", {"default": 0, "min": 0, "max": 10000, "step": 12}),
-                "force_reprocess": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": (
-                        "Normally leave off: completed outputs are reused when the video, checkpoint, "
-                        "and settings match. Turn on only to discard them and run masking + SV4D again."
-                    ),
-                }),
             }
         }
 
@@ -761,20 +743,16 @@ class MorphGSPreprocessVideo:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, video_path, already_masked, sv4d_mode, fastmode, max_frames,
-                   force_reprocess):
-        if force_reprocess:
-            return float("NaN")
+    def IS_CHANGED(cls, video_path, already_masked, sv4d_mode, fastmode, max_frames):
         return json.dumps({
-            "source": _input_change_token(video_path, False),
+            "source": _input_change_token(video_path),
             "already_masked": bool(already_masked),
             "sv4d_mode": sv4d_mode,
             "fastmode": bool(fastmode),
             "max_frames": int(max_frames),
         }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, video_path, already_masked, sv4d_mode, fastmode, max_frames,
-            force_reprocess):
+    def run(self, video_path, already_masked, sv4d_mode, fastmode, max_frames):
         log = []
         source_selection = video_path
         video_path = _resolve_input_path(source_selection)
@@ -803,7 +781,7 @@ class MorphGSPreprocessVideo:
         processed_dir = os.path.join(processed_root, scene_name)
         manifest_path = os.path.join(processed_dir, _CACHE_MANIFEST)
         desired_manifest = {
-            "schema": 1,
+            "schema": 2,
             "source": source_selection,
             "source_signature": _path_signature(video_path),
             "already_masked": bool(already_masked),
@@ -819,8 +797,10 @@ class MorphGSPreprocessVideo:
             and _read_manifest(manifest_path) == desired_manifest
         )
 
-        if force_reprocess or not cache_valid:
-            log.append(_require_cuda_for_sv4d())
+        if not cache_valid:
+            device_log = _require_cuda_for_sv4d()
+            print(f"[MorphGS] {device_log}", flush=True)
+            log.append(device_log)
             _reset_stage_dir(scene_dir, videos_root)
             _reset_stage_dir(processed_dir, processed_root)
             os.makedirs(scene_dir, exist_ok=True)
@@ -828,6 +808,8 @@ class MorphGSPreprocessVideo:
             shutil.copy(video_path, pipeline_src_video)
 
             mask_args = [pipeline_src_video, rgb_path]
+            if max_frames > 0:
+                mask_args += ["--max-frames", max_frames]
             if already_masked:
                 mask_args.append("--skip-mask")
             out = _reporting_setup_log(

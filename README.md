@@ -121,9 +121,8 @@ ComfyUI's own in-memory result cache, since that doesn't survive a ComfyUI resta
 here can take hours. This is what actually lets you restart ComfyUI mid-pipeline without losing
 finished work. The manifests propagate through Train & Render and Export:
 changing a source file, preprocessing setting, checkpoint, training seed, or trained deform
-checkpoint invalidates the affected downstream cache automatically. Train and Export follow the
-same uncluttered model as the reference 3D node packs and need no force toggles. Preprocessing
-retains `force_reprocess` only as a recovery control for its external staged input directories.
+checkpoint invalidates the affected downstream cache automatically. None of the nodes needs a
+force toggle: selecting or replacing an input or changing a setting triggers the relevant work.
 
 Automatic height is exact for the geometry and transforms Blender imports, and glTF defines its
 linear units as metres. It cannot infer real-world metres perfectly from an incorrectly authored
@@ -132,12 +131,19 @@ FBX that has no trustworthy unit metadata. Implausible measurements therefore us
 as a normal user control.
 
 Video preparation contains two different workloads. FFmpeg decoding/encoding, image compositing,
-and rembg background removal may use CPU. rembg automatically requests CUDA when a working
-`onnxruntime-gpu` provider is already installed and prints the provider it actually activated;
-the installer preserves that backend and supplies CPU ONNX Runtime only when no backend exists.
+and skeleton thinning use CPU. On NVIDIA hosts, the installer upgrades the old CPU-only rembg
+backend to `onnxruntime-gpu==1.23.2` with its CUDA/cuDNN pip runtimes, without changing torch.
+Existing CUDA backends are preserved. rembg prints the provider it actually activated and
+warns if CUDA could not load. Provider availability alone does not prove GPU execution.
 SV4D and DINO are the expensive neural stages and are required to run on CUDA—the node reports
 the exact GPU and stops with a clear error instead of silently attempting them on CPU. Enable
 `already_masked` only for a correctly framed/masked input to skip rembg entirely.
+
+`max_frames` now limits initial decoding and background removal as well as SV4D, so a 12-frame
+test no longer masks the entire video. Intermediate RGBA frames are stored on disk to bound RAM
+usage. CPU thinning processes one frame at a time and crops to the foreground bounds without
+changing skeletons. Live console output identifies each stage and its elapsed time; CPU activity
+between GPU stages is expected and does not mean SV4D itself is using CPU.
 
 Every node is also an `OUTPUT_NODE`, so any one of them can be queued and will actually execute
 on its own while you're building out a graph step by step -- without this, ComfyUI's execution

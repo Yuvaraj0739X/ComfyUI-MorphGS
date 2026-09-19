@@ -23,20 +23,14 @@ function migrateLegacyWidgetValues(nodeData, config) {
     const values = config?.widgets_values;
     if (!Array.isArray(values)) return;
 
-    // Character height is now always detected automatically. Collapse both the pre-2.7
-    // [source, name, target_height, force, height_mode] layout and the 2.7
-    // [source, target_height, force, height_mode] layout to [source, force].
+    // Character preprocessing now needs only the source; retire every older trailing control.
     if (nodeData.name === "MorphGSPreprocessCharacter") {
-        if (typeof values[1] === "string" && typeof values[2] === "number" &&
-            typeof values[3] === "boolean") {
-            config.widgets_values = [values[0], values[3]];
-        } else if (typeof values[1] === "number" && typeof values[2] === "boolean") {
-            config.widgets_values = [values[0], values[2]];
-        }
+        config.widgets_values = values.slice(0, 1);
     }
-    if (nodeData.name === "MorphGSPreprocessVideo" &&
-        typeof values[1] === "string" && typeof values[2] === "boolean") {
-        config.widgets_values = [values[0], ...values.slice(2)];
+    if (nodeData.name === "MorphGSPreprocessVideo") {
+        const migrated = typeof values[1] === "string" && typeof values[2] === "boolean"
+            ? [values[0], ...values.slice(2)] : values;
+        config.widgets_values = migrated.slice(0, 5);
     }
     // Retain every meaningful setting while removing the retired trailing cache-bypass
     // toggles. Train also serializes the seed control mode (for example "fixed").

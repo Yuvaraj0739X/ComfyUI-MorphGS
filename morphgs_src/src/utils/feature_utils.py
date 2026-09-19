@@ -84,7 +84,6 @@ def extract_feature(img_dir, feat_dir, sd_model, sd_aug, aggre_net, extractor_vi
                 render_feat = get_processed_features(sd_model, sd_aug, aggre_net, extractor_vit, num_patches, img=render_img)
                 feat_path = os.path.join(feat_dir, fname.replace(".png", "_feat.pt"))
                 torch.save(render_feat, feat_path)
-                torch.cuda.empty_cache()
 
     print("Feature extraction completed (DINOv2-only path).")
 

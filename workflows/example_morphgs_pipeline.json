@@ -43,8 +43,7 @@
         "Node name for S&R": "MorphGSPreprocessCharacter"
       },
       "widgets_values": [
-        "",
-        false
+        ""
       ]
     },
     {
@@ -92,8 +91,7 @@
         false,
         "",
         true,
-        0,
-        false
+        0
       ]
     },
     {

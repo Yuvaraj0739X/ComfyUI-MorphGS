@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 
 from . import config
 
@@ -198,13 +199,34 @@ def run_python(script_path: str, args: list, timeout: int = None, env: dict = No
     result.
     """
     full_env = subprocess_env(env)
-    proc = subprocess.run(
-        [sys.executable, script_path, *[str(a) for a in args]],
+    proc = subprocess.Popen(
+        [sys.executable, "-u", script_path, *[str(a) for a in args]],
         cwd=config.MORPHGS_HOME,
-        capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace",
         env=full_env,
     )
-    output = proc.stdout + proc.stderr
+    lines = []
+
+    def forward_output():
+        for line in proc.stdout:
+            lines.append(line)
+            print(line, end="", flush=True)
+
+    reader = threading.Thread(target=forward_output, daemon=True)
+    reader.start()
+    try:
+        proc.wait(timeout=timeout)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        reader.join(timeout=5)
+        if not reader.is_alive():
+            proc.stdout.close()
+        raise
+    reader.join()
+    proc.stdout.close()
+    output = "".join(lines)
     if proc.returncode != 0:
         raise RuntimeError(
             f"MorphGS pipeline step failed (exit {proc.returncode}): "

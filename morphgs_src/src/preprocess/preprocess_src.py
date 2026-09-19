@@ -5,6 +5,7 @@ import sys
 import os
 import shutil
 import argparse
+import time
 import torch
 import numpy as np
 import cv2
@@ -12,7 +13,6 @@ from PIL import Image
 from glob import glob
 from tqdm import tqdm
 import imageio
-from skimage.morphology import thin
 
 from contextlib import contextmanager
 
@@ -680,26 +680,9 @@ def generate_multi_views(src_video_path, out_dir, mode="sv4d", sv4d_num_steps=50
             shutil.rmtree(sparse_cleanup_dir, ignore_errors=True)
 
 
-def extract_skeleton(masks): 
-    def get_2d_skeleton(mask):
-        if not isinstance(mask, np.ndarray):
-            mask = np.array(mask)
-        
-        thinned = thin((mask>0).astype(np.uint8)).astype(np.float32)
-        thinned = thinned.astype(np.int32)
-        new_thinned = thinned.copy()
-        select = new_thinned > 0
-        new_thinned[select] = 255    
-        return new_thinned
-    
-    thinned_images = [] 
-    for idx in tqdm(range(0,masks.shape[0])):
-        thinned_img = get_2d_skeleton(masks[idx])   
-        thinned_images.append(thinned_img)
-        
-    return thinned_images 
-
 def extract_masks_thinned(out_dir):
+    from utils.mask_utils import thin_foreground
+
     # Save thinned image from masks
     for vd in os.listdir(out_dir):
         if vd.startswith("view"):
@@ -714,23 +697,24 @@ def extract_masks_thinned(out_dir):
         mask_imgs_dir = os.path.join(base_dir, "mask")
         
         os.makedirs(mask_imgs_dir, exist_ok=True)
+        thinned_imgs_dir = os.path.join(base_dir, "thinned")
+        os.makedirs(thinned_imgs_dir, exist_ok=True)
+        started = time.perf_counter()
+        frame_names = sorted(n for n in os.listdir(parts_imgs_dir) if n.endswith(".png"))
+        print(f"[MorphGS] CPU mask/thinning: {vd}, {len(frame_names)} frames", flush=True)
 
         # make masks: non-white pixels -> 1, white pixels -> 0
-        for mask_name in os.listdir(parts_imgs_dir):
+        for index, mask_name in enumerate(frame_names, 1):
             if mask_name.endswith(".png"):
                 mask_raw = Image.open(os.path.join(parts_imgs_dir, mask_name)).convert('L')
                 mask_np = np.array(mask_raw)
                 mask_binary = (mask_np < 250).astype(np.uint8) * 255
-                Image.fromarray(mask_binary).save(os.path.join(mask_imgs_dir, mask_name))
-            
-        thinned_imgs_dir = os.path.join(base_dir, "thinned")
-        os.makedirs(thinned_imgs_dir, exist_ok=True)
-        nf = len(os.listdir(mask_imgs_dir))
-        masks = np.array([np.array(Image.open(os.path.join(mask_imgs_dir, f"{i:03d}.png")).convert('L')) for i in range(nf)])
-        thinned_images = extract_skeleton(masks) 
-
-        for i in range(len(thinned_images)):
-            cv2.imwrite(os.path.join(thinned_imgs_dir, f"{i:03d}.png"), thinned_images[i])
+                Image.fromarray(mask_binary).save(os.path.join(mask_imgs_dir, mask_name), compress_level=1)
+                Image.fromarray(thin_foreground(mask_binary)).save(
+                    os.path.join(thinned_imgs_dir, mask_name), compress_level=1)
+                if index % 12 == 0 or index == len(frame_names):
+                    print(f"[MorphGS] CPU mask/thinning {vd}: {index}/{len(frame_names)} "
+                          f"({time.perf_counter() - started:.1f}s)", flush=True)
     
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -804,6 +788,8 @@ if __name__ == "__main__":
     # 1. load source video and generate multi-views: view0, 60,120,180,240 will be generated: save to processed_videos/view_{view_id}
     #     - save part grouping as well.
     if not generation_complete(output_dir, args.mode):
+        stage_started = time.perf_counter()
+        print("[MorphGS] SV4D GPU synthesis starting (CPU model loading/frame I/O included)", flush=True)
         # Clear any partial output from a previously crashed run so it regenerates cleanly.
         if os.path.exists(output_dir) and os.listdir(output_dir):
             print(f"Incomplete output detected, regenerating: {output_dir}")
@@ -817,6 +803,7 @@ if __name__ == "__main__":
             sv4d_max_frames=sv4d_max_frames,
             sv4d_stride=sv4d_stride,
         )
+        print(f"[MorphGS] SV4D synthesis finished in {time.perf_counter() - stage_started:.1f}s", flush=True)
 
     view_dirs = sorted([vd for vd in os.listdir(output_dir) if vd.startswith("view")])
     if len(view_dirs) == 0:
@@ -829,6 +816,9 @@ if __name__ == "__main__":
 
     # 3. extract features from rendered images. save to feature/ folder.
     if not os.path.exists(os.path.join(output_dir, sentinel_view, "feature")):
+        stage_started = time.perf_counter()
+        print("[MorphGS] DINO GPU feature extraction starting", flush=True)
         extract_src_features(output_dir)
+        print(f"[MorphGS] DINO finished in {time.perf_counter() - stage_started:.1f}s", flush=True)
 
     print("Finished preprocess_src.py")

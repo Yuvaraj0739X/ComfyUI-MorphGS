@@ -113,22 +113,24 @@ class CacheBehaviorTests(unittest.TestCase):
         with mock.patch.object(self.nodes, "run_blender_script", fake_blender), mock.patch.object(
             self.nodes, "run_python", fake_python
         ):
-            result = node.run("character.glb", False)
+            result = node.run("character.glb")
             self.assertEqual(result[0], "character")
             self.assertAlmostEqual(result[2], 1.82)
             self.assertIn("detected 1.8200 m", result[1])
             self.assertEqual(calls[0][2], "auto_from_file_units")
-            node.run("character.glb", False)
+            node.run("character.glb")
             self.assertEqual(len(calls), 2)
 
-            before = node.IS_CHANGED("character.glb", False)
+            before = node.IS_CHANGED("character.glb")
             source.write_bytes(b"changed source")
-            after = node.IS_CHANGED("character.glb", False)
+            after = node.IS_CHANGED("character.glb")
             self.assertNotEqual(before, after)
-            node.run("character.glb", False)
+            node.run("character.glb")
             self.assertEqual(len(calls), 4)
 
-            node.run("character.glb", True)
+            alternate = self.input_dir / "other.glb"
+            alternate.write_bytes(b"another character")
+            node.run("other.glb")
             self.assertEqual(len(calls), 6)
 
         self.assertEqual(self.nodes._stage_name_from_input("avatars/My Hero.glb", "character_name"), "My_Hero")
@@ -186,21 +188,28 @@ class CacheBehaviorTests(unittest.TestCase):
             mock.patch.object(self.nodes, "_require_cuda_for_sv4d", lambda: "SV4D/DINO device: test GPU"),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-            node.run("motion.mp4", False, "sv4d2.safetensors", True, 12, False)
-            node.run("motion.mp4", False, "sv4d2.safetensors", True, 12, False)
+            node.run("motion.mp4", False, "sv4d2.safetensors", True, 12)
+            node.run("motion.mp4", False, "sv4d2.safetensors", True, 12)
             self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][1][-2:], ("--max-frames", 12))
             self.assertNotEqual(
-                node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 12, False),
-                node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 24, False),
+                node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 12),
+                node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 24),
             )
 
             stale = Path(self.nodes.config.MORPHGS_HOME) / "demo" / "processed_videos" / "motion" / "view_0" / "color" / "999.png"
             stale.write_bytes(b"stale")
-            node.run("motion.mp4", False, "sv4d2.safetensors", True, 24, False)
+            node.run("motion.mp4", False, "sv4d2.safetensors", True, 24)
             self.assertEqual(len(calls), 4)
             self.assertFalse(stale.exists())
             self.assertIn("--sv4d_max_frames", calls[-1][1])
             self.assertIn(24, calls[-1][1])
+            before = node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 24)
+            source.write_bytes(b"replaced uploaded video")
+            after = node.IS_CHANGED("motion.mp4", False, "sv4d2.safetensors", True, 24)
+            self.assertNotEqual(before, after)
+            node.run("motion.mp4", False, "sv4d2.safetensors", True, 24)
+            self.assertEqual(len(calls), 6)
 
 
 if __name__ == "__main__":

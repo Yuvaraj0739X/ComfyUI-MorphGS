@@ -42,6 +42,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 MORPHGS_SRC = os.path.join(PACKAGE_DIR, "morphgs_src")
@@ -222,14 +223,39 @@ def ensure_requirements():
 
 
 def ensure_rembg_backend():
-    """rembg (used by this package's own mask_video.py) needs an onnxruntime backend; a bare
-    `pip install rembg` succeeds and then fails at first use with "No onnxruntime backend
-    found". Preserve an existing onnxruntime-gpu install; add the CPU backend only when the
-    ComfyUI environment has no ONNX Runtime at all."""
-    rc, _ = _python_subprocess("import onnxruntime")
-    if rc == 0:
+    """Prefer GPU rembg on NVIDIA hosts, including upgrades from our old CPU-only setup.
+
+    ORT's CUDA 12 pip runtimes are loaded in the mask subprocess independently of torch.
+    Never install both CPU/GPU distributions: they own the same onnxruntime namespace.
+    """
+    gpu_rc, _ = _python_subprocess(
+        "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)"
+    )
+    rc, providers = _python_subprocess(
+        "import onnxruntime as ort; print(ort.get_available_providers())"
+    )
+    if gpu_rc != 0:
+        if rc != 0:
+            pip_install("rembg[cpu]")
         return
-    pip_install("rembg[cpu]")
+    if rc == 0 and "CUDAExecutionProvider" in providers and not installed_version("onnxruntime"):
+        log("Existing ONNX CUDA backend retained; mask_video verifies its active session provider.")
+        return
+
+    # Pin a CUDA 12 release: unbounded latest now selects CUDA 13. Download first so a
+    # missing wheel/network failure cannot remove the user's existing CPU backend.
+    requirement = "onnxruntime-gpu[cuda,cudnn]==1.23.2"
+    with tempfile.TemporaryDirectory(prefix="morphgs-ort-") as wheel_dir:
+        run([sys.executable, "-m", "pip", "download", "--only-binary=:all:",
+             "--no-deps", "--dest", wheel_dir, requirement])
+        wheels = [os.path.join(wheel_dir, name) for name in os.listdir(wheel_dir)
+                  if name.endswith(".whl")]
+        pip_install(requirement)
+        if installed_version("onnxruntime"):
+            run([sys.executable, "-m", "pip", "uninstall", "-y", "onnxruntime"])
+            # Uninstalling CPU removes shared files; restore GPU from the downloaded wheel.
+            pip_install("--force-reinstall", "--no-deps", wheels[0])
+    log("Installed ONNX CUDA backend and its runtime libraries for rembg (torch unchanged).")
 
 
 def ensure_setuptools():
