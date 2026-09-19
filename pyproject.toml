@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-morphgs"
 description = "ComfyUI custom nodes for MorphGS: video-to-4D character motion transfer (rig conversion, DINOv2/SV4D preprocessing, gsplat-based training, animated .glb/.fbx export). Installs like any other node: pip requirements plus prebuilt pytorch3d/gsplat CUDA wheels matched to your torch build by install.py -- no compiler, no CUDA toolkit, torch untouched. Needs Blender 4.2+ on PATH; SV4D/SP4D checkpoint goes in models/diffusion_models."
-version = "2.6.4"
+version = "2.7.0"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [

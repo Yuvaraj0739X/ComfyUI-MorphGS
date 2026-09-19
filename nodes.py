@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,21 @@ def _safe_stage_name(value, label):
     if not value or value in (".", "..") or os.path.basename(value) != value:
         raise ValueError(f"{label} must be a non-empty name without path separators: {value!r}")
     return value
+
+
+def _stage_name_from_input(selection, label):
+    """Stable pipeline name derived from the uploaded/selected input's filename.
+
+    Users should not need to keep a second, manually typed name in sync with the file picker.
+    Keep names readable while making them safe as a directory and MorphGS experiment component.
+    """
+    selection = str(selection).replace("\\", "/").rstrip("/")
+    basename = os.path.basename(selection)
+    stem = os.path.splitext(basename)[0]
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    if not value:
+        raise ValueError(f"Could not derive a safe {label} from input: {selection!r}")
+    return _safe_stage_name(value, label)
 
 
 def _path_signature(path):
@@ -181,14 +197,8 @@ class MorphGSPreprocessCharacter:
         return {
             "required": {
                 "character_source_path": (options, {
-                    "file_upload": True,
-                    "remote": {
-                        "route": "/morphgs/input/characters",
-                        "refresh_button": True,
-                        "control_after_refresh": "first",
-                    },
+                    "tooltip": "Choose a rigged character already under ComfyUI/input, or use Upload character.",
                 }),
-                "character_name": ("STRING", {"default": "my_character"}),
                 "target_height": ("FLOAT", {"default": 1.6, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "force_reprocess": ("BOOLEAN", {"default": False}),
                 "height_mode": (["auto_from_file_units", "manual_target_height"], {
@@ -212,25 +222,24 @@ class MorphGSPreprocessCharacter:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, character_source_path, character_name, target_height, force_reprocess,
+    def IS_CHANGED(cls, character_source_path, target_height, force_reprocess,
                    height_mode="auto_from_file_units"):
         if force_reprocess:
             return float("NaN")
         return json.dumps({
             "source": _input_change_token(character_source_path, False),
-            "character_name": character_name,
             "target_height": float(target_height),
             "height_mode": height_mode,
         }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, character_source_path, character_name, target_height, force_reprocess,
+    def run(self, character_source_path, target_height, force_reprocess,
             height_mode="auto_from_file_units"):
         log = []
         if height_mode not in ("auto_from_file_units", "manual_target_height"):
             raise ValueError(f"Unsupported height_mode: {height_mode!r}")
         source_selection = character_source_path
         character_source_path = _resolve_input_path(source_selection)
-        character_name = _safe_stage_name(character_name, "character_name")
+        character_name = _stage_name_from_input(source_selection, "character_name")
         characters_root = os.path.join(config.MORPHGS_HOME, "demo", "characters")
         char_dir = os.path.join(characters_root, character_name)
         manifest_path = os.path.join(char_dir, _CACHE_MANIFEST)
@@ -706,14 +715,8 @@ class MorphGSPreprocessVideo:
         return {
             "required": {
                 "video_path": (video_options, {
-                    "video_upload": True,
-                    "remote": {
-                        "route": "/morphgs/input/videos",
-                        "refresh_button": True,
-                        "control_after_refresh": "first",
-                    },
+                    "tooltip": "Choose a video already under ComfyUI/input, or use Upload video.",
                 }),
-                "scene_name": ("STRING", {"default": "my_scene"}),
                 "already_masked": ("BOOLEAN", {"default": False}),
                 "sv4d_mode": (sv4d_options, {
                     "default": sv4d_options[0],
@@ -739,25 +742,24 @@ class MorphGSPreprocessVideo:
     # OUTPUT_NODE-less node: "Prompt has no outputs").
 
     @classmethod
-    def IS_CHANGED(cls, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
+    def IS_CHANGED(cls, video_path, already_masked, sv4d_mode, fastmode, max_frames,
                    force_reprocess):
         if force_reprocess:
             return float("NaN")
         return json.dumps({
             "source": _input_change_token(video_path, False),
-            "scene_name": scene_name,
             "already_masked": bool(already_masked),
             "sv4d_mode": sv4d_mode,
             "fastmode": bool(fastmode),
             "max_frames": int(max_frames),
         }, sort_keys=True, separators=(",", ":"))
 
-    def run(self, video_path, scene_name, already_masked, sv4d_mode, fastmode, max_frames,
+    def run(self, video_path, already_masked, sv4d_mode, fastmode, max_frames,
             force_reprocess):
         log = []
         source_selection = video_path
         video_path = _resolve_input_path(source_selection)
-        scene_name = _safe_stage_name(scene_name, "scene_name")
+        scene_name = _stage_name_from_input(source_selection, "scene_name")
         mode, filename = _resolve_sv4d_selection(sv4d_mode)
 
         import folder_paths

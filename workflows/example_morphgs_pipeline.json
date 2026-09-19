@@ -44,7 +44,6 @@
       },
       "widgets_values": [
         "",
-        "my_character",
         1.6,
         false,
         "auto_from_file_units"
@@ -92,7 +91,6 @@
       },
       "widgets_values": [
         "",
-        "my_scene",
         false,
         "",
         true,
